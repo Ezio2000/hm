@@ -1,0 +1,35 @@
+[project]
+name = "hm"
+version = "0.1.0"
+description = "harness-manager：统一管理 Claude Code 和 Codex 实例"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.14"
+dependencies = [
+    "mcp>=1.12,<2",
+    "textual[syntax]>=3.0",
+    "tomlkit>=0.15.2",
+]
+
+[project.scripts]
+hm = "hm.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["pytest>=8.4.0", "pytest-asyncio>=1.2.0", "ruff>=0.15.0"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]  # 界面和注释用中文全角标点
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

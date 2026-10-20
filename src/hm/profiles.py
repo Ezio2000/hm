@@ -585,7 +585,8 @@ def read_credentials(inst: Instance) -> dict[str, Any]:
     """读取实例连接地址和明文凭据，不刷新或修改登录状态。"""
     if inst.settings_error:
         raise ValueError(inst.settings_error)
-    env = {**inst.launch_env(), **inst.env}
+    # Claude 凭据只认实例自己的 settings env；进程环境可能继承自调用 hm 的其他实例。
+    env = inst.env if inst.engine == "claude" else {**inst.launch_env(), **inst.env}
     result = {"name": inst.name, "engine": inst.engine, "url": inst.base_url,
               "api_key": None, "oauth_token": None, "source": None}
     if inst.engine == "claude":

@@ -1,4 +1,4 @@
-"""hm（harness-manager）：统一管理 Claude Code 和 Codex 实例。"""
+"""hm (harness-manager): manage Claude Code and Codex instances."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def highlight(text: str, language: str) -> RenderableType:
 
 
 def fill(table: DataTable, rows: list[tuple[str, ...]], keys: list[str] | None = None) -> None:
-    """重填表格并尽量保留光标位置。"""
+    """Refill the table, keeping the cursor position where possible."""
     row = table.cursor_row
     table.clear()
     for i, cells in enumerate(rows):
@@ -56,7 +56,7 @@ def fill(table: DataTable, rows: list[tuple[str, ...]], keys: list[str] | None =
 
 
 class InstanceTable(DataTable):
-    """实例表；鼠标拖动一行调整顺序。"""
+    """Instance table; drag a row with the mouse to reorder."""
 
     drag_from: int | None = None
 
@@ -84,7 +84,8 @@ class InstanceTable(DataTable):
 
 
 class LayerPanel(Vertical):
-    """一层的 Setting、Plugin、Skill、MCP、Prompt；实例面板另有叠加共享层后的 Result。"""
+    """One layer's Setting, Plugin, Skill, MCP and Prompt; an instance panel also has Result,
+    the outcome after layering with the shared layer."""
 
     def __init__(self, scope: str, *, id: str) -> None:
         super().__init__(id=id)
@@ -115,9 +116,10 @@ class LayerPanel(Vertical):
     def on_mount(self) -> None:
         shared = self.scope == "shared"
         self.query_one(".plugin-table", DataTable).add_columns(
-            *(("插件", "版本", "共享") if shared else ("插件", "版本", "本实例", "共享", "生效")))
-        self.query_one(".skill-table", DataTable).add_columns("Skill", "目录")
-        self.query_one(".mcp-table", DataTable).add_columns("MCP", "传输", "地址 / 命令")
+            *(("Plugin", "Version", "Shared") if shared
+              else ("Plugin", "Version", "Instance", "Shared", "Effective")))
+        self.query_one(".skill-table", DataTable).add_columns("Skill", "Directory")
+        self.query_one(".mcp-table", DataTable).add_columns("MCP", "Transport", "URL / Command")
 
     @property
     def active_part(self) -> str:
@@ -134,7 +136,7 @@ class LayerPanel(Vertical):
         if layer is None:
             for selector in (".setting-view", ".prompt-view", ".result-view"):
                 for view in self.query(selector):
-                    view.update("还没有实例")
+                    view.update("No instances yet")
             for table in self.query(DataTable):
                 table.clear()
             return
@@ -150,9 +152,9 @@ class LayerPanel(Vertical):
     def show_setting(self, layer: Layer) -> None:
         head = Text(f"{layer.settings_path}\n\n", style="bold")
         if layer.settings_error:
-            body: RenderableType = Text(f"读取失败：{layer.settings_error}", style="red")
+            body: RenderableType = Text(f"Failed to read: {layer.settings_error}", style="red")
         elif not layer.settings_path.exists():
-            body = Text("文件还不存在，从“操作”菜单创建", style="dim")
+            body = Text("The file does not exist yet; create it from the Actions menu", style="dim")
         else:
             body = highlight(layer.settings_path.read_text(), layer.format)
         self.query_one(".setting-view", Static).update(Group(head, body))
@@ -182,7 +184,7 @@ class LayerPanel(Vertical):
                        for k, v in sorted(profiles.list_mcp(paths, layer).items())]
             rows = [(e["name"], e["transport"], e["target"]) for e in entries]
         except (OSError, ValueError) as e:
-            rows = [("读取失败", "—", str(e))]
+            rows = [("Failed to read", "—", str(e))]
         fill(self.query_one(".mcp-table", DataTable), rows)
 
     def show_prompt(self, layer: Layer) -> None:
@@ -190,7 +192,7 @@ class LayerPanel(Vertical):
                  else f"{layer.settings_path} · developer_instructions")
         text = profiles.read_prompt(layer)
         body = (highlight(text, "markdown") if text.strip()
-                else Text("（空）从“操作”菜单编辑", style="dim"))
+                else Text("(empty) edit from the Actions menu", style="dim"))
         self.query_one(".prompt-view", Static).update(Group(Text(f"{where}\n\n", style="bold"),
                                                             body))
 
@@ -199,24 +201,24 @@ class LayerPanel(Vertical):
         try:
             result = profiles.resolve(paths, inst)
         except (OSError, ValueError) as e:
-            view.update(Text(f"无法叠加：{e}", style="red"))
+            view.update(Text(f"Cannot layer: {e}", style="red"))
             return
-        rule = ("Claude：共享层（managed）优先，列表取并集" if inst.engine == "claude"
-                else "Codex：实例层优先，表逐键合并")
+        rule = ("Claude: shared layer (managed) wins; lists are unioned" if inst.engine == "claude"
+                else "Codex: instance layer wins; tables merge key by key")
         parts: list[RenderableType] = [Text(f"Result = {inst.name} + Shared · {rule}\n",
                                             style="bold")]
         parts.append(Text("Plugin", style="bold underline"))
-        parts.append(Text("\n".join(result.plugins) or "（无）"))
+        parts.append(Text("\n".join(result.plugins) or "(none)"))
         parts.append(Text("\nSkill", style="bold underline"))
-        parts.append(Text("\n".join(f"{n}  · {s}" for n, s in result.skills) or "（无）"))
+        parts.append(Text("\n".join(f"{n}  · {s}" for n, s in result.skills) or "(none)"))
         parts.append(Text("\nMCP", style="bold underline"))
         parts.append(Text("\n".join(f"{e['name']}  {e['transport']}  {e['target']}  · {e['source']}"
-                                    for e in result.mcp) or "（无）"))
+                                    for e in result.mcp) or "(none)"))
         parts.append(Text("\nPrompt", style="bold underline"))
         for title, text in result.prompt:
             parts += [Text(f"— {title} —", style="dim"), highlight(text, "markdown")]
         if not result.prompt:
-            parts.append(Text("（无）"))
+            parts.append(Text("(none)"))
         parts.append(Text("\nSetting", style="bold underline"))
         settings = (tomlkit.dumps(result.settings) if inst.engine == "codex"
                     else json.dumps(result.settings, ensure_ascii=False, indent=2))
@@ -226,8 +228,8 @@ class LayerPanel(Vertical):
 
 class EditScreen(Screen[bool]):
     BINDINGS = [  # noqa: RUF012
-        Binding("ctrl+s", "save", "保存", key_display="Ctrl+S", priority=True),
-        Binding("escape", "cancel", "不保存返回", key_display="Esc", priority=True),
+        Binding("ctrl+s", "save", "Save", key_display="Ctrl+S", priority=True),
+        Binding("escape", "cancel", "Discard and go back", key_display="Esc", priority=True),
     ]
 
     def __init__(self, title: str, text: str, language: str,
@@ -240,7 +242,7 @@ class EditScreen(Screen[bool]):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Label(f" 编辑 {self.title_text}", id="edit-title")
+        yield Label(f" Edit {self.title_text}", id="edit-title")
         yield TextArea.code_editor(self.text, language=self.language)
         yield Footer()
 
@@ -248,7 +250,7 @@ class EditScreen(Screen[bool]):
         try:
             self.save(self.query_one(TextArea).text)
         except (OSError, ValueError) as e:
-            self.notify(f"没有保存：{e}", severity="error")
+            self.notify(f"Not saved: {e}", severity="error")
             return
         self.dismiss(True)
 
@@ -261,16 +263,16 @@ def compact(n: int) -> str:
         else f"{n / 1e3:.1f}K" if n >= 1e3 else str(n)
 
 
-DIMENSION_NAMES = {"second": "秒", "hour": "小时", "day": "天", "week": "周", "month": "月",
-                   "type": "类型", "model": "模型", "session": "Session"}
+DIMENSION_NAMES = {"second": "Second", "hour": "Hour", "day": "Day", "week": "Week",
+                   "month": "Month", "type": "Type", "model": "Model", "session": "Session"}
 
 
 class ClickTable(DataTable):
-    """单击一行即选中；DataTable 默认第一次单击只移动光标。"""
+    """A single click selects a row; by default DataTable's first click only moves the cursor."""
 
     async def _on_click(self, event: events.Click) -> None:
         row = event.style.meta.get("row", -1)
-        if row < 0:  # 表头等交给默认处理
+        if row < 0:  # header etc. fall through to the default handling
             return
         event.prevent_default()
         event.stop()
@@ -286,8 +288,8 @@ def fill_usage(table: DataTable, rows: list[dict], by: list[str]) -> None:
     keys = [("time" if d in usage.BUCKETS else d) for d in by]
     keys += [] if "time" in keys else ["last"]
     table.clear(columns=True)
-    table.add_columns(*({**DIMENSION_NAMES, "time": "时间", "last": "最近"}[k] for k in keys),
-                      "请求", "input", "output", "cache_read", "cache_write", "cost",
+    table.add_columns(*({**DIMENSION_NAMES, "time": "Time", "last": "Last"}[k] for k in keys),
+                      "Requests", "input", "output", "cache_read", "cache_write", "cost",
                       "speed", "first_token")
     for r in rows:
         table.add_row(
@@ -302,16 +304,17 @@ def usage_summary(title: str, rows: list[dict]) -> Text:
     unpriced = any(r["cost"] is None for r in rows)
     return Text.assemble(
         (f" {title}", "bold"),
-        f" · {sum(r['requests'] for r in rows):,} 次请求"
+        f" · {sum(r['requests'] for r in rows):,} requests"
         f" · {money(sum(r['cost'] or 0 for r in rows))}",
-        ("（部分模型未配置价格，从“操作”菜单设置价格）" if unpriced else "", "yellow"),
+        (" (some models have no price; set prices from the Actions menu)" if unpriced else "",
+         "yellow"),
     )
 
 
 class SessionScreen(Screen[None]):
-    """一个 Session 按时间顺序的每次请求；同一秒内的请求合为一行。"""
+    """Every request of one Session in time order; requests within the same second share a row."""
 
-    BINDINGS = [Binding("escape", "back", "返回", key_display="Esc")]  # noqa: RUF012
+    BINDINGS = [Binding("escape", "back", "Back", key_display="Esc")]  # noqa: RUF012
 
     def __init__(self, paths: Paths, session: str) -> None:
         super().__init__()
@@ -339,12 +342,13 @@ class SessionScreen(Screen[None]):
 
 
 class UsagePanel(Vertical):
-    """会话日志用量：按范围筛选，按时间粒度和一个维度分组。"""
+    """Session log usage: filter by range, group by a time granularity and one dimension."""
 
-    PERIODS = (("今天", 1), ("最近 7 天", 7), ("最近 30 天", 30), ("全部", 0))
-    BUCKETS = (("不分时间", ""), ("按秒", "second"), ("按小时", "hour"), ("按天", "day"),
-               ("按周", "week"), ("按月", "month"))
-    GROUPS = (("不分组", ""), ("按类型", "type"), ("按模型", "model"), ("按 Session", "session"))
+    PERIODS = (("Today", 1), ("Last 7 days", 7), ("Last 30 days", 30), ("All", 0))
+    BUCKETS = (("No time split", ""), ("By second", "second"), ("By hour", "hour"),
+               ("By day", "day"), ("By week", "week"), ("By month", "month"))
+    GROUPS = (("No grouping", ""), ("By type", "type"), ("By model", "model"),
+              ("By Session", "session"))
 
     def __init__(self, paths: Paths) -> None:
         super().__init__()
@@ -369,7 +373,8 @@ class UsagePanel(Vertical):
                                self.query_one("#group", Select).value) if v]
         self.rows = []
         self.query_one("#usage", DataTable).clear()
-        self.query_one("#usage-summary", Static).update(" 统计中…首次需要读完全部会话日志")
+        self.query_one("#usage-summary", Static).update(
+            " Computing… the first run has to read all session logs")
         self.fetch(list(self.by), self.query_one("#period", Select).value or None)
 
     @work(thread=True, exclusive=True, group="usage")
@@ -383,14 +388,14 @@ class UsagePanel(Vertical):
         try:
             rows = usage.report(self.paths, by, usage.since_days(days))
         except (OSError, ValueError) as e:
-            self.app.call_from_thread(self.notify, f"统计失败：{e}", severity="error")
+            self.app.call_from_thread(self.notify, f"Computation failed: {e}", severity="error")
             return
         self.app.call_from_thread(show, rows)
 
     def show(self, by: list[str], rows: list[dict]) -> None:
         self.rows = rows
-        hint = " · 点击一行查看这个会话的每次请求" if "session" in by else ""
-        self.query_one("#usage-summary", Static).update(usage_summary(f"合计{hint}", rows))
+        hint = " · click a row to see this session's requests" if "session" in by else ""
+        self.query_one("#usage-summary", Static).update(usage_summary(f"Total{hint}", rows))
         fill_usage(self.query_one("#usage", DataTable), rows, by)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
@@ -404,13 +409,13 @@ class UsagePanel(Vertical):
                 self.load()
 
         self.app.push_screen(EditScreen(
-            str(self.paths.hm_dir / "pricing.json") + "（每百万 token 美元）",
+            str(self.paths.hm_dir / "pricing.json") + " (USD per million tokens)",
             usage.pricing_text(self.paths), "json",
             lambda text: usage.save_pricing(self.paths, text)), done)
 
 
 class NewScreen(ModalScreen[tuple[str, Instance, str, str, str] | None]):
-    BINDINGS = [Binding("escape", "cancel", "取消")]  # noqa: RUF012
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]  # noqa: RUF012
 
     def __init__(self, paths: Paths, instances: list[Instance]) -> None:
         super().__init__()
@@ -419,20 +424,20 @@ class NewScreen(ModalScreen[tuple[str, Instance, str, str, str] | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
-            yield Label("新建实例")
-            yield Input(placeholder="名称，如 claude-qwen、codex-glm", id="name")
+            yield Label("New instance")
+            yield Input(placeholder="Name, e.g. claude-qwen, codex-glm", id="name")
             yield Select(
-                [(f"{i.name}（{i.engine} · {i.provider}）", i.name)
+                [(f"{i.name} ({i.engine} · {i.provider})", i.name)
                  for i in self.instances.values()],
-                prompt="复用哪个实例的通用设置", id="template",
+                prompt="Reuse common settings from which instance", id="template",
             )
-            yield Input(placeholder="API 地址（Codex 用 Responses 接口；官方账号留空）",
+            yield Input(placeholder="API URL (Responses API for Codex; empty if official)",
                         id="base-url")
-            yield Input(placeholder="API token（官方账号留空）", id="token")
-            yield Input(placeholder="模型，如 qwen3-coder-plus 或 opus", id="model")
+            yield Input(placeholder="API token (empty for an official account)", id="token")
+            yield Input(placeholder="Model, e.g. qwen3-coder-plus or opus", id="model")
             with Horizontal(classes="buttons"):
-                yield Button("创建", variant="primary", id="ok")
-                yield Button("取消", id="cancel")
+                yield Button("Create", variant="primary", id="ok")
+                yield Button("Cancel", id="cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel":
@@ -446,9 +451,9 @@ class NewScreen(ModalScreen[tuple[str, Instance, str, str, str] | None]):
         if error := profiles.validate_new_name(self.paths, name):
             self.notify(error, severity="error")
         elif template not in self.instances:
-            self.notify("请选择要复制的实例", severity="error")
+            self.notify("Select an instance to copy", severity="error")
         elif not model or (base_url and not token):
-            self.notify("请填写模型；第三方接口还需要填写 token", severity="error")
+            self.notify("Enter a model; third-party endpoints also need a token", severity="error")
         else:
             self.dismiss((name, self.instances[str(template)], base_url, token, model))
 
@@ -457,7 +462,7 @@ class NewScreen(ModalScreen[tuple[str, Instance, str, str, str] | None]):
 
 
 class ConfirmScreen(ModalScreen[bool]):
-    BINDINGS = [Binding("escape", "cancel", "取消")]  # noqa: RUF012
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]  # noqa: RUF012
 
     def __init__(self, message: str) -> None:
         super().__init__()
@@ -467,8 +472,8 @@ class ConfirmScreen(ModalScreen[bool]):
         with Vertical(classes="dialog"):
             yield Label(self.message)
             with Horizontal(classes="buttons"):
-                yield Button("删除", variant="error", id="ok")
-                yield Button("取消", id="cancel")
+                yield Button("Delete", variant="error", id="ok")
+                yield Button("Cancel", id="cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "ok")
@@ -504,7 +509,7 @@ class HarnessManager(App[Instance | None]):
     .buttons { height: auto; align-horizontal: right; }
     .buttons Button { margin-left: 1; }
     """
-    BINDINGS = [Binding("ctrl+q", "quit", "退出", priority=True)]  # noqa: RUF012
+    BINDINGS = [Binding("ctrl+q", "quit", "Quit", priority=True)]  # noqa: RUF012
 
     def __init__(self, paths: Paths | None = None) -> None:
         super().__init__()
@@ -526,19 +531,20 @@ class HarnessManager(App[Instance | None]):
                 yield LayerPanel("shared", id="shared-panel")
             with TabPane("Usage", id="usage-tab"):
                 yield UsagePanel(self.paths)
-        yield Select([], prompt="操作…", id="actions")
+        yield Select([], prompt="Actions…", id="actions")
         yield Footer()
 
     def on_mount(self) -> None:
         table = self.query_one(InstanceTable)
-        for label, key in [("实例", "name"), ("类型", "kind"), ("供应商", "provider"),
-                           ("模型", "model"), ("登录", "login")]:
+        for label, key in [("Instance", "name"), ("Type", "kind"), ("Provider", "provider"),
+                           ("Model", "model"), ("Login", "login")]:
             table.add_column(label, key=key)
-        self.query_one("#layers", DataTable).add_columns("共享层", "Setting", "Skill", "状态")
+        self.query_one("#layers", DataTable).add_columns(
+            "Shared layer", "Setting", "Skill", "Status")
         self.refresh_data()
         table.focus()
 
-    # ---------- 导航 ----------
+    # ---------- Navigation ----------
 
     @property
     def scope(self) -> str:
@@ -551,21 +557,21 @@ class HarnessManager(App[Instance | None]):
     def update_actions(self) -> None:
         actions = {}
         if self.scope == "instance":
-            actions = {"启动实例": self.launch_selected, "新建实例": self.new_instance,
-                       "删除实例": self.delete_selected}
+            actions = {"Launch instance": self.launch_selected, "New instance": self.new_instance,
+                       "Delete instance": self.delete_selected}
         if self.scope == "usage-tab":
-            actions["设置价格"] = self.query_one(UsagePanel).edit_pricing
+            actions["Set prices"] = self.query_one(UsagePanel).edit_pricing
         elif self.scope in ("instance", "shared"):
             part = self.panel.active_part
             if part in ("setting", "mcp", "prompt"):
-                actions["编辑"] = self.edit_layer
+                actions["Edit"] = self.edit_layer
             elif part == "plugin":
-                actions["启用 / 停用插件"] = self.toggle_plugin
+                actions["Enable / disable plugin"] = self.toggle_plugin
             elif part == "skill":
                 if self.scope == "instance":
-                    actions["技能移到共享"] = self.promote_skill
-                actions["删除技能"] = self.delete_skill
-        actions["刷新"] = self.refresh_data
+                    actions["Move skill to shared"] = self.promote_skill
+                actions["Delete skill"] = self.delete_skill
+        actions["Refresh"] = self.refresh_data
         self.actions = actions
         self.query_one("#actions", Select).set_options((label, label) for label in actions)
 
@@ -588,7 +594,7 @@ class HarnessManager(App[Instance | None]):
                 self.query_one("#instances" if self.scope == "instance" else "#layers").focus()
         self.update_actions()
 
-    # ---------- 数据刷新 ----------
+    # ---------- Data refresh ----------
 
     def refresh_data(self) -> None:
         if self.scope == "usage-tab":
@@ -619,14 +625,14 @@ class HarnessManager(App[Instance | None]):
     def login_text(self, inst: Instance) -> str:
         if not inst.is_official:
             return "API Key"
-        return self.logins.get(inst.name, "检查中…")
+        return self.logins.get(inst.name, "Checking…")
 
     def refresh_problems(self) -> None:
         problems = [p for e in ENGINES
                     for p in profiles.find_problems(profiles.for_engine(self.paths, e))]
         text = Text()
         if problems:
-            text.append(f"✘ 发现 {len(problems)} 个问题", style="bold red")
+            text.append(f"✘ {len(problems)} problem(s) found", style="bold red")
             for p in problems:
                 text.append(f"\n  · {p}")
         view = self.query_one("#problems", Static)
@@ -645,8 +651,8 @@ class HarnessManager(App[Instance | None]):
     def refresh_layers(self) -> None:
         def state(layer: Layer) -> str:
             if layer.settings_error:
-                return "配置读取失败"
-            return "可写" if os.access(layer.settings_path.parent, os.W_OK) else "没有写权限"
+                return "Failed to read settings"
+            return "Writable" if os.access(layer.settings_path.parent, os.W_OK) else "Not writable"
 
         fill(self.query_one("#layers", DataTable),
              [(layer.label, str(layer.settings_path), str(layer.skills_dir), state(layer))
@@ -670,9 +676,10 @@ class HarnessManager(App[Instance | None]):
         for inst in [i for i in self.instances if i.is_official]:
             try:
                 status = profiles.auth_status(inst)
-                text = (status.get("email") or "已登录") if status.get("loggedIn") else "未登录"
+                text = ((status.get("email") or "Logged in") if status.get("loggedIn")
+                        else "Logged out")
             except Exception as e:
-                text = f"检查失败：{e}"
+                text = f"Check failed: {e}"
             self.call_from_thread(self.set_login, inst.name, text)
 
     def set_login(self, name: str, text: str) -> None:
@@ -681,7 +688,7 @@ class HarnessManager(App[Instance | None]):
         if table is not None and name in table.rows:
             table.update_cell(name, "login", text, update_width=True)
 
-    # ---------- 实例操作 ----------
+    # ---------- Instance actions ----------
 
     def launch_selected(self) -> None:
         if inst := self.selected:
@@ -703,12 +710,12 @@ class HarnessManager(App[Instance | None]):
                 profiles.create_instance(profiles.for_engine(self.paths, template.engine),
                                          name, template, base_url, token, model)
             except (OSError, ValueError) as e:
-                self.notify(f"创建失败：{e}", severity="error")
+                self.notify(f"Create failed: {e}", severity="error")
                 return
             self.refresh_data()
             row = next(i for i, inst in enumerate(self.instances) if inst.name == name)
             self.query_one(InstanceTable).move_cursor(row=row)
-            self.notify(f"已创建 {name}，可从操作菜单启动")
+            self.notify(f"Created {name}; launch it from the Actions menu")
             self.panel.activate("setting")
             self.edit_layer()
 
@@ -719,11 +726,12 @@ class HarnessManager(App[Instance | None]):
         if inst is None:
             return
         if inst.is_default:
-            self.notify(f"{inst.name} 是默认实例（直接运行 {inst.engine} 用的就是它），不能删除",
-                        severity="warning")
+            self.notify(f"{inst.name} is the default instance (running {inst.engine} directly "
+                        "uses it) and cannot be deleted", severity="warning")
             return
-        extra = "，并先退出该账号的登录" if inst.is_official else ""
-        message = f"删除实例 {inst.name}？会删掉 {inst.path}{extra}。共享层不受影响。"
+        extra = " and log the account out first" if inst.is_official else ""
+        message = (f"Delete instance {inst.name}? This removes {inst.path}{extra}. "
+                   "The shared layer is not affected.")
 
         def done(ok: bool | None) -> None:
             if not ok:
@@ -731,14 +739,14 @@ class HarnessManager(App[Instance | None]):
             try:
                 profiles.delete_instance(inst)
             except (OSError, ValueError) as e:
-                self.notify(f"删除失败：{e}", severity="error")
+                self.notify(f"Delete failed: {e}", severity="error")
                 return
-            self.notify(f"已删除 {inst.name}")
+            self.notify(f"Deleted {inst.name}")
             self.refresh_data()
 
         self.push_screen(ConfirmScreen(message), done)
 
-    # ---------- 分层编辑 ----------
+    # ---------- Layer editing ----------
 
     def edit_layer(self) -> None:
         panel = self.panel
@@ -752,16 +760,16 @@ class HarnessManager(App[Instance | None]):
                 servers = profiles.list_mcp(paths, layer)
                 text = (tomlkit.dumps({"mcp_servers": servers}) if codex
                         else json.dumps(servers, ensure_ascii=False, indent=2) + "\n")
-                title, language = f"{layer.label} 的 MCP", layer.format
+                title, language = f"MCP of {layer.label}", layer.format
 
                 def save(text: str) -> None:
                     data = tomlkit.parse(text).get("mcp_servers", {}) if codex else json.loads(text)
                     if not isinstance(data, dict):
-                        raise ValueError("MCP 配置必须是以名称为键的对象")
+                        raise ValueError("MCP config must be an object keyed by name")
                     profiles.save_mcp(paths, layer, data)
             elif part == "prompt":
                 text, language = profiles.read_prompt(layer), "markdown"
-                title = f"{layer.label} 的 Prompt"
+                title = f"Prompt of {layer.label}"
 
                 def save(text: str) -> None:
                     profiles.save_prompt(layer, text)
@@ -775,12 +783,12 @@ class HarnessManager(App[Instance | None]):
             else:
                 return
         except (OSError, ValueError) as e:
-            self.notify(f"读取失败：{e}", severity="error")
+            self.notify(f"Failed to read: {e}", severity="error")
             return
 
         def done(saved: bool | None) -> None:
             if saved:
-                self.notify(f"已保存 {title}，新开的会话生效")
+                self.notify(f"Saved {title}; takes effect in new sessions")
                 self.reload()
 
         self.push_screen(EditScreen(title, text, language, save), done)
@@ -795,11 +803,12 @@ class HarnessManager(App[Instance | None]):
         try:
             profiles.set_plugin(panel.current, plugin.id, enabled)
         except (OSError, ValueError) as e:
-            self.notify(f"保存失败：{e}", severity="error")
+            self.notify(f"Save failed: {e}", severity="error")
             return
         self.reload()
-        where = "共享层" if panel.current.shared else panel.current.name
-        self.notify(f"{plugin.id} 在 {where} {'启用' if enabled else '停用'}，新开的会话生效")
+        where = "the shared layer" if panel.current.shared else panel.current.name
+        self.notify(f"{plugin.id} {'enabled' if enabled else 'disabled'} in {where}; "
+                    "takes effect in new sessions")
 
     def promote_skill(self) -> None:
         panel = self.panel
@@ -810,10 +819,10 @@ class HarnessManager(App[Instance | None]):
         try:
             profiles.promote_skill(profiles.for_engine(self.paths, layer.engine), layer, name)
         except (OSError, ValueError) as e:
-            self.notify(f"移动失败：{e}", severity="error")
+            self.notify(f"Move failed: {e}", severity="error")
             return
         self.reload()
-        self.notify(f"{name} 已移到共享层，所有 {layer.engine} 实例都能用")
+        self.notify(f"{name} moved to the shared layer; every {layer.engine} instance can use it")
 
     def delete_skill(self) -> None:
         panel = self.panel
@@ -828,13 +837,13 @@ class HarnessManager(App[Instance | None]):
             try:
                 profiles.delete_skill(layer, name)
             except OSError as e:
-                self.notify(f"删除失败：{e}", severity="error")
+                self.notify(f"Delete failed: {e}", severity="error")
                 return
             self.reload()
-            self.notify(f"已删除 {name}")
+            self.notify(f"Deleted {name}")
 
-        self.push_screen(ConfirmScreen(f"删除 {layer.label} 的技能 {name}？"
-                                       f"会删掉 {layer.skills_dir / name}。"), done)
+        self.push_screen(ConfirmScreen(f"Delete skill {name} of {layer.label}? "
+                                       f"This removes {layer.skills_dir / name}."), done)
 
 
 def main() -> None:

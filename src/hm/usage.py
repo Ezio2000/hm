@@ -1,9 +1,12 @@
-"""会话日志用量统计：Claude Code 读共享 projects，Codex 读各实例 sessions。
+"""Usage statistics from session logs: Claude Code reads the shared projects directory,
+Codex reads each instance's sessions.
 
-解析结果按文件缓存在 ~/.hm/usage.db，文件大小或修改时间变了才重读；费用在查询时
-按 ~/.hm/pricing.json（每百万 token 美元）计算，改价立即生效。input 统一指未命中缓存
-的输入。耗时和首字从日志时间戳估算：耗时 = 请求起点到回复结束，
-首字 = 起点到开始输出；速度只统计输出不少于 200 token、耗时不少于 1 秒的请求。
+Parsed results are cached per file in ~/.hm/usage.db and re-read only when the file size or
+modification time changes; cost is computed at query time from ~/.hm/pricing.json (USD per
+million tokens), so price changes apply immediately. input always means uncached input.
+Latency and first token are estimated from log timestamps: latency = request start to end
+of reply, first token = start to first output; speed counts only requests with at least
+200 output tokens and at least 1 second of latency.
 """
 
 from __future__ import annotations
@@ -37,7 +40,8 @@ def _ms(timestamp: str | None) -> int | None:
 
 
 def _timing(start: int | None, first: int | None, end: int | None) -> tuple[int | None, ...]:
-    """耗时不在 0.1 秒到 1 小时之间、首字不在 (0, 耗时] 之间时视为取错了起点，丢弃。"""
+    """Drop timings whose latency is outside 0.1 s to 1 h or whose first token is outside
+    (0, latency]; the start was misidentified."""
     if start is None or end is None or not 100 <= end - start <= 3_600_000:
         return None, None
     latency = end - start
@@ -45,7 +49,7 @@ def _timing(start: int | None, first: int | None, end: int | None) -> tuple[int 
 
 
 def _rows(path: Path) -> Iterator[dict[str, Any]]:
-    """逐行读 JSONL（Codex 会把旧会话压成 .jsonl.zst），跳过坏行。"""
+    """Read JSONL line by line (Codex compresses old sessions to .jsonl.zst), skipping bad lines."""
     opener = zstd.open if path.suffix == ".zst" else open
     with opener(path, "rt", encoding="utf-8", errors="replace") as lines:
         for line in lines:
@@ -62,7 +66,8 @@ def _session(cwd: str | None, session: str | None) -> str:
 
 
 def parse_claude(path: Path) -> list[dict[str, Any]]:
-    """同一条回复的每个内容块各写一行；起点沿第一块的父链往上找，跳过 attachment。"""
+    """Each content block of one reply is its own line; the start is found by walking up the
+    first block's parent chain, skipping attachments."""
     chain: dict[str, tuple[str | None, int | None, bool]] = {}
     replies: dict[str, dict[str, Any]] = {}
     for row in _rows(path):
@@ -114,8 +119,9 @@ def parse_claude(path: Path) -> list[dict[str, Any]]:
 
 
 def parse_codex(path: Path) -> list[dict[str, Any]]:
-    """每个有新增用量的 token_count 是一次请求；起点是第一个模型输出前最近的
-    用户消息、工具结果或上一次请求结束，首字取 item_completed 的 started_at_ms。"""
+    """Each token_count with new usage is one request; the start is the nearest user message,
+    tool result or previous request end before the first model output, and the first token
+    is the started_at_ms of item_completed."""
     records: list[dict[str, Any]] = []
     session = session_id = model = None
     total_seen = -1
@@ -148,7 +154,7 @@ def parse_codex(path: Path) -> list[dict[str, Any]]:
             total = (info.get("total_token_usage") or {}).get("total_tokens") or 0
             usage = info.get("last_token_usage") or {}
             if total <= total_seen or not usage:
-                continue  # 刷新限额时重发的快照不是新请求
+                continue  # snapshots resent when limits refresh are not new requests
             total_seen = total
             latency, first_token = _timing(start if start is not None else boundary,
                                            first, end or ms)
@@ -186,7 +192,7 @@ def _connect(paths: Paths) -> sqlite3.Connection:
 
 
 def sync(paths: Paths, engine: str | None = None) -> None:
-    """重读指定客户端新增或变化的日志文件，清掉已删除文件的记录。"""
+    """Re-read new or changed log files of the given client and drop records of deleted files."""
     with _connect(paths) as db:
         if db.execute("pragma user_version").fetchone()[0] != CACHE_VERSION:
             db.execute("delete from records")
@@ -213,7 +219,7 @@ def sync(paths: Paths, engine: str | None = None) -> None:
             db.execute("delete from files where path = ?", (key,))
 
 
-# ---------- 价格 ----------
+# ---------- Pricing ----------
 
 def load_pricing(paths: Paths) -> dict[str, dict[str, float]]:
     try:
@@ -224,7 +230,7 @@ def load_pricing(paths: Paths) -> dict[str, dict[str, float]]:
 
 
 def pricing_text(paths: Paths) -> str:
-    """价格文件内容；还没有时列出日志里出现过的模型，价格先填 0。"""
+    """Pricing file content; if there is none, list the models seen in the logs at price 0."""
     file = paths.hm_dir / "pricing.json"
     if file.exists():
         return file.read_text()
@@ -240,13 +246,15 @@ def save_pricing(paths: Paths, text: str) -> None:
         isinstance(v, dict) and set(v) == set(PRICE_KEYS)
         and all(isinstance(n, int | float) for n in v.values()) for v in data.values()
     ):
-        raise ValueError(f"格式为 {{模型: {{{', '.join(PRICE_KEYS)}}}}}，单位是每百万 token 美元")
+        raise ValueError(
+            f"Expected {{model: {{{', '.join(PRICE_KEYS)}}}}} in USD per million tokens")
     paths.hm_dir.mkdir(exist_ok=True)
     (paths.hm_dir / "pricing.json").write_text(text if text.endswith("\n") else text + "\n")
 
 
 def price_of(pricing: dict[str, dict[str, float]], model: str) -> dict[str, float] | None:
-    """先精确匹配，再逐段去掉末尾的 -xxx：claude-opus-5-5 可匹配 claude-opus-5。"""
+    """Match exactly first, then drop trailing -xxx segments: claude-opus-5-5 matches
+    claude-opus-5."""
     name = model.lower().split("/")[-1].split("[")[0]
     while name not in pricing:
         if "-" not in name:
@@ -255,11 +263,12 @@ def price_of(pricing: dict[str, dict[str, float]], model: str) -> dict[str, floa
     return pricing[name]
 
 
-# ---------- 聚合 ----------
+# ---------- Aggregation ----------
 
 def _instance_resolver(paths: Paths) -> Callable[[dict[str, Any]], str]:
-    """记录所属实例：Codex 日志在实例自己的目录；Claude 日志共享，按各实例
-    session-env、file-history、history.jsonl 里的会话 ID 对应，对不上的记为 unknown。"""
+    """Instance owning a record: Codex logs live in the instance's own directory; Claude logs are
+    shared and matched by session ID against each instance's session-env, file-history and
+    history.jsonl, with unmatched ones recorded as unknown."""
     claude = {}
     for inst in list_instances(for_engine(paths, "claude")):
         for folder in ("session-env", "file-history"):
@@ -284,17 +293,18 @@ def _instance_resolver(paths: Paths) -> Callable[[dict[str, Any]], str]:
 def report(paths: Paths, by: list[str], since: datetime | None = None,
            engine: str | None = None, session: str | None = None,
            instance: str | None = None) -> list[dict[str, Any]]:
-    """按 by 里的维度分组汇总，时间维度最多一个；engine、session、instance 用来过滤。"""
+    """Aggregate by the dimensions in by, at most one time dimension; engine, session and
+    instance filter."""
     if unknown := [d for d in by if d not in DIMENSIONS]:
-        raise ValueError(f"不支持的维度：{unknown}，可选 {DIMENSIONS}")
+        raise ValueError(f"Unsupported dimensions: {unknown}; choose from {DIMENSIONS}")
     if sum(d in BUCKETS for d in by) > 1:
-        raise ValueError("时间粒度只能选一个")
+        raise ValueError("Choose at most one time granularity")
     if instance and instance != "unknown":
         owner = next((inst for kind in ("claude", "codex")
                       for inst in list_instances(for_engine(paths, kind))
                       if inst.name == instance), None)
         if owner is None:
-            raise ValueError(f"实例不存在：{instance}")
+            raise ValueError(f"Instance not found: {instance}")
         if engine and engine != owner.engine:
             return []
         engine = owner.engine
@@ -316,7 +326,7 @@ def report(paths: Paths, by: list[str], since: datetime | None = None,
         owner = resolve(r) if resolve else None
         if instance and owner != instance:
             continue
-        if (r["engine"], r["rid"]) in seen:  # resume 等会把同一条回复写进多个文件
+        if (r["engine"], r["rid"]) in seen:  # resume etc. write one reply into several files
             continue
         seen.add((r["engine"], r["rid"]))
         labels = {"type": r["engine"].capitalize(), "model": r["model"], "session": r["session"],
@@ -327,7 +337,7 @@ def report(paths: Paths, by: list[str], since: datetime | None = None,
         g = groups.setdefault(key, {"requests": 0, **dict.fromkeys(PRICE_KEYS, 0), "cost": 0,
                                     "speed_output": 0, "speed_ms": 0, "first_tokens": []})
         g["requests"] += 1
-        g["last"] = r["time"]  # 记录按时间升序读出，最后一条就是最近一次
+        g["last"] = r["time"]  # records come in ascending time order, so the last is the latest
         for k in PRICE_KEYS:
             g[k] += r[k]
         price = price_of(pricing, r["model"])
@@ -355,7 +365,7 @@ def report(paths: Paths, by: list[str], since: datetime | None = None,
 
 
 def since_days(days: int | None) -> datetime | None:
-    """最近 days 天（含今天）的起点；None 表示不限。"""
+    """Start of the last days days including today; None means no limit."""
     if days is None:
         return None
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)

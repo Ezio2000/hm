@@ -13,7 +13,7 @@ Quota = dict[str, Any]  # {"windows": [...], "balance": [...]}
 
 
 def _iso(value: str | float) -> str:
-    """ISO 字符串、秒或毫秒时间戳统一为 UTC ISO。"""
+    """Normalize an ISO string or a seconds/milliseconds timestamp to UTC ISO."""
     if isinstance(value, str):
         moment = datetime.fromisoformat(value)
     else:
@@ -35,13 +35,13 @@ def _get(url: str, headers: dict[str, str]) -> Any:
 def _bearer(creds: dict[str, Any]) -> str:
     token = creds["oauth_token"] or creds["api_key"]
     if not token:
-        raise ValueError("未找到凭据")
+        raise ValueError("Credentials not found")
     return f"Bearer {token}"
 
 
 def _anthropic(creds: dict[str, Any]) -> Quota:
     if not creds["oauth_token"]:
-        raise ValueError("未登录官方账号")
+        raise ValueError("Not logged in to an official account")
     data = _get("https://api.anthropic.com/api/oauth/usage",
                 {"Authorization": _bearer(creds), "anthropic-beta": "oauth-2025-04-20"})
     labels = {"five_hour": "5h", "seven_day": "7d", "seven_day_opus": "7d-opus",
@@ -53,10 +53,10 @@ def _anthropic(creds: dict[str, Any]) -> Quota:
 def _chatgpt(creds: dict[str, Any]) -> Quota:
     token = creds["oauth_token"]
     if not token:
-        raise ValueError("官方 API Key 没有额度接口，需 ChatGPT 登录")
+        raise ValueError("Official API keys have no quota endpoint; log in with ChatGPT")
     parts = token.split(".")
     if len(parts) != 3:
-        raise ValueError("无效的 ChatGPT OAuth Token")
+        raise ValueError("Invalid ChatGPT OAuth token")
     payload = parts[1]
     claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
     account = claims["https://api.openai.com/auth"]["chatgpt_account_id"]
@@ -121,7 +121,7 @@ def _host(inst: profiles.Instance, name: str) -> bool:
     return host == name or host.endswith(f".{name}")
 
 
-# 按顺序匹配；新增供应商只需在此追加一项。
+# Matched in order; add a provider by appending one entry here.
 ADAPTERS: list[tuple[str, Callable[[profiles.Instance], bool],
                      Callable[[dict[str, Any]], Quota]]] = [
     ("anthropic", lambda i: i.engine == "claude" and i.is_official, _anthropic),
@@ -142,7 +142,8 @@ def read_one(inst: profiles.Instance) -> dict[str, Any]:
             except (OSError, ValueError, KeyError, TypeError) as error:
                 return {"name": inst.name, "provider": provider, "supported": True,
                         "error": f"{type(error).__name__}: {error}"}
-    return {"name": inst.name, "supported": False, "reason": f"未识别的供应商 {inst.provider}"}
+    return {"name": inst.name, "supported": False,
+            "reason": f"Unrecognized provider {inst.provider}"}
 
 
 def read_all(instances: list[profiles.Instance]) -> list[dict[str, Any]]:

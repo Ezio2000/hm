@@ -1,21 +1,23 @@
-"""Claude Code / Codex 的实例、共享层、排序、配置和状态。
+"""Instances, shared layers, ordering, configuration and status of Claude Code and Codex.
 
-每个实例和每个客户端的共享层都有 Setting、Plugin、Skill、MCP、Prompt 五部分，
-实例实际生效的结果 = 实例层 + 共享层。共享层尽量放在客户端原生叠加读取的位置：
+Every instance and every client's shared layer has five parts: Setting, Plugin, Skill, MCP
+and Prompt. An instance's effective result = its own layer + the shared layer. The shared
+layer sits where the client natively layers configuration:
 
-  部分            Claude 共享层                            Codex 共享层（/etc/codex/config.toml）
-  Setting/Plugin  managed-settings.json（高于实例）        整个文件（低于实例）
+  Part            Claude shared layer                      Codex shared layer
+  Setting/Plugin  managed-settings.json (above instance)    whole file (below instance)
   Skill           shared/skills ← managed/.claude/skills   ~/.agents/skills
-  MCP             shared/mcp.json → 各实例 .claude.json    mcp_servers
+  MCP             shared/mcp.json -> instance .claude.json  mcp_servers
   Prompt          shared/CLAUDE.md ← managed/CLAUDE.md     developer_instructions
 
-managed 指 /Library/Application Support/ClaudeCode；Claude 共享 MCP 没有原生入口
-（managed 只接受远程 https），由 hm 同步写进各实例。
+managed means /Library/Application Support/ClaudeCode. Claude has no native entry for shared
+MCP (managed only accepts remote https), so hm syncs it into each instance.
 
-claude-1 是默认实例：~/.claude 和 ~/.claude.json 软链到它，用裸 claude 启动，
-不设 CLAUDE_CONFIG_DIR。其余实例用 CLAUDE_CONFIG_DIR=<实例目录> 启动。
-Codex 默认实例直接使用 ~/.codex，其余实例通过 CODEX_HOME 使用 ~/.codex-profiles。
-插件安装缓存、会话记录等不分层的资源从 link_source 软链进各实例。
+claude-1 is the default instance: ~/.claude and ~/.claude.json are symlinked to it and it
+starts as bare claude without CLAUDE_CONFIG_DIR. Other instances start with
+CLAUDE_CONFIG_DIR=<instance dir>. The default Codex instance uses ~/.codex directly; the
+others use ~/.codex-profiles through CODEX_HOME. Unlayered resources such as the plugin
+install cache and session records are symlinked into each instance from link_source.
 """
 
 from __future__ import annotations
@@ -55,7 +57,7 @@ class Paths:
     @classmethod
     def default(cls, engine: str = "claude") -> Paths:
         if engine not in ("claude", "codex"):
-            raise ValueError("engine 必须为 claude 或 codex")
+            raise ValueError("engine must be claude or codex")
         return cls(Path.home(), engine=engine)
 
     @property
@@ -79,10 +81,10 @@ class Paths:
 
 @dataclass
 class Layer:
-    """实例或共享层：五部分各自的存放位置和已读入的配置。
+    """An instance or shared layer: where each of the five parts is stored and the loaded settings.
 
-    prompt_path 为 None 时 Prompt 存在配置的 developer_instructions 里；
-    mcp_path 为 None 时 MCP 存在配置的 mcp_servers 里。
+    When prompt_path is None the Prompt lives in the settings' developer_instructions;
+    when mcp_path is None the MCP servers live in the settings' mcp_servers.
     """
 
     name: str
@@ -147,7 +149,7 @@ class Instance(Layer):
 
     @property
     def model(self) -> str:
-        return self.env.get("ANTHROPIC_MODEL") or self.settings.get("model") or "默认"
+        return self.env.get("ANTHROPIC_MODEL") or self.settings.get("model") or "default"
 
     @property
     def command(self) -> str:
@@ -186,7 +188,7 @@ def _load[L: Layer](layer: L, missing_ok: bool = False) -> L:
         text = layer.settings_path.read_text()
         data = tomlkit.parse(text) if layer.engine == "codex" else json.loads(text)
         if not isinstance(data, dict):
-            raise ValueError("配置顶层必须是对象")
+            raise ValueError("Top level of the configuration must be an object")
         layer.settings = data
     except FileNotFoundError as e:
         if not missing_ok:
@@ -229,7 +231,7 @@ def _read_order(paths: Paths) -> list[str]:
 
 
 def list_instances(paths: Paths) -> list[Instance]:
-    """按 order.json 排序；不在其中的实例排在后面，按名称排。"""
+    """Sort by order.json; instances not in it come last, by name."""
     order = _read_order(paths)
     rank = {name: i for i, name in enumerate(order)}
     dirs = [p for p in paths.root.iterdir() if p.is_dir() and p.name != SHARED_DIR] \
@@ -261,17 +263,17 @@ def save_order(paths: Paths, names: list[str]) -> None:
 # ---------- Setting ----------
 
 def save_settings(layer: Layer, text: str) -> None:
-    """校验 JSON/TOML 后原样写入，保留用户的排版。"""
+    """Validate JSON/TOML, then write it verbatim, keeping the user's formatting."""
     data = tomlkit.parse(text) if layer.engine == "codex" else json.loads(text)
     if not isinstance(data, dict):
-        raise ValueError("配置顶层必须是对象")
+        raise ValueError("Top level of the configuration must be an object")
     layer.settings_path.write_text(text if text.endswith("\n") else text + "\n")
     layer.settings, layer.settings_error = data, None
 
 
 def _require_settings(layer: Layer) -> None:
     if layer.settings_error:
-        raise ValueError(f"{layer.label} 的配置读取失败：{layer.settings_error}")
+        raise ValueError(f"Failed to read settings of {layer.label}: {layer.settings_error}")
 
 
 def _write_settings(layer: Layer, data: dict[str, Any]) -> None:
@@ -280,7 +282,7 @@ def _write_settings(layer: Layer, data: dict[str, Any]) -> None:
 
 
 def plain(value: Any) -> Any:
-    """把 tomlkit 对象转成普通 Python 值；JSON 读入的值原样返回。"""
+    """Convert tomlkit objects to plain Python values; values read from JSON are returned as is."""
     if hasattr(value, "unwrap"):
         return value.unwrap()
     if isinstance(value, dict):
@@ -289,7 +291,7 @@ def plain(value: Any) -> Any:
 
 
 def merge(base: dict[str, Any], top: dict[str, Any], union_lists: bool = False) -> dict[str, Any]:
-    """top 覆盖 base；对象逐键合并，union_lists 时列表取并集。"""
+    """top overrides base; objects merge key by key and, with union_lists, lists are unioned."""
     out = dict(base)
     for key, value in top.items():
         if isinstance(value, dict) and isinstance(out.get(key), dict):
@@ -307,7 +309,7 @@ def merge(base: dict[str, Any], top: dict[str, Any], union_lists: bool = False) 
 class Plugin:
     id: str
     version: str
-    enabled: bool | None  # None 表示这一层没有设置
+    enabled: bool | None  # None means this layer does not set it
 
 
 def cached_plugin_versions(paths: Paths) -> dict[str, str]:
@@ -336,7 +338,7 @@ def plugin_versions(paths: Paths) -> dict[str, str]:
         installed = json.loads((paths.link_source / "plugins/installed_plugins.json").read_text())
     except (OSError, ValueError):
         installed = {}
-    return {**{k: f"{v}（缓存）" for k, v in cached.items()},
+    return {**{k: f"{v} (cached)" for k, v in cached.items()},
             **{k: v[0].get("version", "") for k, v in installed.get("plugins", {}).items() if v}}
 
 
@@ -349,12 +351,13 @@ def plugin_states(layer: Layer) -> dict[str, bool]:
 
 def list_plugins(paths: Paths, layer: Layer) -> list[Plugin]:
     versions, states = plugin_versions(paths), plugin_states(layer)
-    return [Plugin(i, versions.get(i, "未安装"), states.get(i))
+    return [Plugin(i, versions.get(i, "not installed"), states.get(i))
             for i in sorted(versions.keys() | states.keys())]
 
 
 def set_plugin(layer: Layer, plugin: str, enabled: bool) -> None:
-    """实例层明确保存启停；共享层只负责提供，关闭即删除条目，不去压住实例。"""
+    """An instance layer stores the enabled state explicitly; a shared layer only provides,
+    and disabling removes the entry without suppressing the instance."""
     _require_settings(layer)
     data = layer.settings
     if layer.engine == "codex":
@@ -373,7 +376,7 @@ def set_plugin(layer: Layer, plugin: str, enabled: bool) -> None:
 
 
 def plugin_mcp(paths: Paths, plugin: str) -> list[dict[str, str]]:
-    """读取插件缓存里最新版本声明的 MCP。"""
+    """Read the MCP servers declared by the newest version in the plugin cache."""
     name, _, marketplace = plugin.partition("@")
     manifest = (".codex-plugin/plugin.json" if paths.engine == "codex"
                 else ".claude-plugin/plugin.json")
@@ -391,7 +394,7 @@ def plugin_mcp(paths: Paths, plugin: str) -> list[dict[str, str]]:
         if config.is_file():
             data = json.loads(config.read_text())
             servers.update(data.get("mcpServers", data))
-    return [mcp_entry(k, v, f"插件 · {plugin}", root) for k, v in servers.items()]
+    return [mcp_entry(k, v, f"Plugin · {plugin}", root) for k, v in servers.items()]
 
 
 # ---------- Skill ----------
@@ -412,10 +415,10 @@ def delete_skill(layer: Layer, name: str) -> None:
 
 
 def promote_skill(paths: Paths, inst: Instance, name: str) -> None:
-    """把实例自己的技能移到共享层，同类客户端的所有实例都能用。"""
+    """Move an instance's own skill to the shared layer for all instances of the client."""
     target = load_shared(paths).skills_dir / name
     if target.exists():
-        raise ValueError(f"共享层已有 {name}")
+        raise ValueError(f"The shared layer already has {name}")
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(inst.skills_dir / name, target)
 
@@ -441,7 +444,8 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def list_mcp(paths: Paths, layer: Layer) -> dict[str, Any]:
-    """这一层自己的用户级 MCP；Claude 实例的 .claude.json 里同名于共享层的条目属于共享层。"""
+    """A layer's own user-level MCP servers; entries in a Claude instance's .claude.json that
+    share a name with the shared layer belong to the shared layer."""
     if layer.mcp_path is None:
         _require_settings(layer)
         return dict(layer.settings.get("mcp_servers", {}))
@@ -454,7 +458,7 @@ def list_mcp(paths: Paths, layer: Layer) -> dict[str, Any]:
 
 def save_mcp(paths: Paths, layer: Layer, servers: dict[str, Any]) -> None:
     if not all(isinstance(v, dict) for v in servers.values()):
-        raise ValueError("每个 MCP 的配置都必须是对象")
+        raise ValueError("Every MCP config must be an object")
     if layer.mcp_path is None:
         _require_settings(layer)
         data = layer.settings
@@ -465,7 +469,8 @@ def save_mcp(paths: Paths, layer: Layer, servers: dict[str, Any]) -> None:
         _write_settings(layer, data)
         return
     if layer.shared:
-        # 先同步实例再写共享文件，中途失败时重试仍能算出要移除的条目
+        # sync instances before writing the shared file, so a retry after a mid-way failure
+        # can still compute the entries to remove
         removed = list_mcp(paths, layer).keys() - servers.keys()
         for inst in list_instances(paths):
             if inst.mcp_path is None:
@@ -478,7 +483,8 @@ def save_mcp(paths: Paths, layer: Layer, servers: dict[str, Any]) -> None:
         return
     shared = list_mcp(paths, load_shared(paths))
     if clash := sorted(servers.keys() & shared.keys()):
-        raise ValueError(f"{'、'.join(clash)} 已在共享 MCP 中，实例里不能重名")
+        raise ValueError(
+            f"{', '.join(clash)} already in shared MCP; an instance cannot reuse the name")
     state = _read_json(layer.mcp_path)
     state["mcpServers"] = {**servers, **shared}
     _write_json(layer.mcp_path, state)
@@ -520,7 +526,8 @@ class Result:
 
 
 def resolve(paths: Paths, inst: Instance) -> Result:
-    """按客户端自己的规则叠加实例层和共享层：Claude 共享层优先，Codex 实例层优先。"""
+    """Layer the instance and shared layers by each client's own rules: shared wins for
+    Claude, instance wins for Codex."""
     shared = load_shared(paths)
     for layer in (inst, shared):
         _require_settings(layer)
@@ -534,28 +541,30 @@ def resolve(paths: Paths, inst: Instance) -> Result:
         plugins = sorted(k for k, v in settings.get("enabledPlugins", {}).items() if v)
 
     own_skills, shared_skills = set(list_skills(inst)), set(list_skills(shared))
-    both = "共享（覆盖同名实例技能）" if not codex else "实例 + 共享（同名）"
+    both = ("Shared (overrides same-name instance skill)" if not codex
+            else "Instance + Shared (same name)")
     skills = [(n, both if n in own_skills and n in shared_skills
-               else "共享" if n in shared_skills else "实例")
+               else "Shared" if n in shared_skills else "Instance")
               for n in sorted(own_skills | shared_skills)]
 
     own_mcp, shared_mcp = list_mcp(paths, inst), list_mcp(paths, shared)
     servers = settings.get("mcp_servers", {}) if codex else {**own_mcp, **shared_mcp}
-    mcp = [mcp_entry(k, v, "实例 + 共享（合并）" if k in own_mcp and k in shared_mcp
-                     else "共享" if k in shared_mcp else "实例")
+    mcp = [mcp_entry(k, v, "Instance + Shared (merged)" if k in own_mcp and k in shared_mcp
+                     else "Shared" if k in shared_mcp else "Instance")
            for k, v in sorted(servers.items())]
     for plugin in plugins:
         mcp += plugin_mcp(paths, plugin)
 
     if codex:
         prompt = [("developer_instructions", str(settings.get("developer_instructions", ""))),
-                  (f"实例 {inst.prompt_path.name}", read_prompt(inst))]
+                  (f"Instance {inst.prompt_path.name}", read_prompt(inst))]
     else:
-        prompt = [("共享 CLAUDE.md", read_prompt(shared)), ("实例 CLAUDE.md", read_prompt(inst))]
+        prompt = [("Shared CLAUDE.md", read_prompt(shared)),
+                  ("Instance CLAUDE.md", read_prompt(inst))]
     return Result(settings, plugins, skills, mcp, [(t, s) for t, s in prompt if s.strip()])
 
 
-# ---------- 实例生命周期与状态 ----------
+# ---------- Instance lifecycle and status ----------
 
 def auth_status(inst: Instance) -> dict[str, Any]:
     out = subprocess.run(
@@ -582,10 +591,12 @@ def auth_status(inst: Instance) -> dict[str, Any]:
 
 
 def read_credentials(inst: Instance) -> dict[str, Any]:
-    """读取实例连接地址和明文凭据，不刷新或修改登录状态。"""
+    """Read an instance's endpoint and plaintext credentials without refreshing or changing
+    login state."""
     if inst.settings_error:
         raise ValueError(inst.settings_error)
-    # Claude 凭据只认实例自己的 settings env；进程环境可能继承自调用 hm 的其他实例。
+    # Claude credentials come only from the instance's own settings env; the process
+    # environment may be inherited from another instance that called hm.
     env = inst.env if inst.engine == "claude" else {**inst.launch_env(), **inst.env}
     result = {"name": inst.name, "engine": inst.engine, "url": inst.base_url,
               "api_key": None, "oauth_token": None, "source": None}
@@ -640,26 +651,27 @@ def read_credentials(inst: Instance) -> dict[str, Any]:
 
 def validate_new_name(paths: Paths, name: str) -> str | None:
     if not NAME_RE.match(name):
-        return "名称只能用小写字母、数字和连字符，且不能以连字符开头"
+        return "Use lowercase letters, digits and hyphens only, and do not start with a hyphen"
     if name in (SHARED_DIR, "claude", "codex", "hm", "claude-1", "codex-1") or any(
         (for_engine(paths, engine).root / name).exists() for engine in ("claude", "codex")
     ):
-        return f"{name} 已存在"
+        return f"{name} already exists"
     return None
 
 
 def create_instance(
     paths: Paths, name: str, template: Instance, base_url: str, token: str, model: str,
 ) -> Instance:
-    """复用通用设置，使用新供应商和模型，沿用信任目录，接入共享 MCP 和不分层的资源。"""
+    """Reuse the common settings with a new provider and model, keep trusted directories, and
+    wire in shared MCP and unlayered resources."""
     if error := validate_new_name(paths, name):
         raise ValueError(error)
     if not model or (base_url and not token):
-        raise ValueError("请填写模型；第三方接口还需要填写 token")
+        raise ValueError("Enter a model; third-party endpoints also need a token")
     if paths.engine != template.engine:
-        raise ValueError("模板和新实例必须使用相同客户端")
+        raise ValueError("The template and the new instance must use the same client")
     if not paths.link_source.is_dir():
-        raise ValueError(f"请先运行 hm init --engine {paths.engine}")
+        raise ValueError(f"Run hm init --engine {paths.engine} first")
     if paths.engine == "codex":
         settings = tomlkit.parse(template.settings_path.read_text())
         for key in ("model_provider", "model_providers", "model_context_window",
@@ -720,14 +732,15 @@ def create_instance(
 
 
 def launch_instance(inst: Instance, cwd: Path) -> str:
-    """MCP 在独立终端启动交互客户端，沿用界面的实例环境规则。"""
+    """Start the interactive client in a separate terminal, using the UI's instance environment
+    rules."""
     _require_settings(inst)
     directory = cwd.expanduser().resolve(strict=True)
     if not directory.is_dir():
-        raise ValueError(f"工作目录不是目录：{directory}")
+        raise ValueError(f"Working directory is not a directory: {directory}")
     executable = shutil.which(inst.engine)
     if executable is None:
-        raise ValueError(f"找不到客户端：{inst.engine}")
+        raise ValueError(f"Client not found: {inst.engine}")
     args = ["env", "-u", "CLAUDE_CONFIG_DIR", "-u", "CODEX_HOME",
             *(f"{k}={v}" for k, v in inst.launch_env({}).items()), executable]
     command = f"cd {shlex.quote(str(directory))} && exec {shlex.join(args)}"
@@ -740,9 +753,10 @@ def launch_instance(inst: Instance, cwd: Path) -> str:
 
 
 def delete_instance(inst: Instance) -> None:
-    """官方账号实例先登出以清掉它的钥匙串条目；rmtree 只删软链本身，不会进入共享目录。"""
+    """Log an official-account instance out first to clear its keychain entry; rmtree removes
+    only the symlinks themselves and never enters the shared directory."""
     if inst.is_default:
-        raise ValueError(f"{inst.name} 是默认实例，不能删除")
+        raise ValueError(f"{inst.name} is the default instance and cannot be deleted")
     if inst.is_official:
         subprocess.run(
             ["codex", "logout"] if inst.engine == "codex" else ["claude", "auth", "logout"],
@@ -763,54 +777,57 @@ def _writable(path: Path) -> bool:
 
 
 def find_problems(paths: Paths) -> list[str]:
-    """只报告出了问题的地方，每条说明影响是什么、怎么处理。"""
+    """Report only what is wrong; each entry states the impact and what to do."""
     shared = load_shared(paths)
     problems = []
     if not list_instances(paths):
         return []
     if shared.settings_error:
-        problems.append(f"共享配置 {shared.settings_path} 读取失败：{shared.settings_error}")
+        problems.append(
+            f"Failed to read shared settings {shared.settings_path}: {shared.settings_error}")
     if paths.engine == "codex":
         if not (paths.codex_system.is_dir() and os.access(paths.codex_system, os.W_OK)):
-            problems.append(f"{paths.codex_system} 不存在或没有写权限：Codex 共享层改不了，"
-                            "运行 hm init --engine codex")
+            problems.append(f"{paths.codex_system} is missing or not writable: the Codex shared "
+                            "layer cannot be changed; run hm init --engine codex")
         if shared.settings_path.exists() and not _writable(shared.settings_path):
-            problems.append("Codex 共享配置不可写，运行 hm init --engine codex")
+            problems.append(
+                "The Codex shared settings are not writable; run hm init --engine codex")
         for inst in list_instances(paths):
             if inst.settings_error:
-                problems.append(f"{inst.name} 的 config.toml 读取失败：{inst.settings_error}")
-            problems += [f"{inst.name} 没有连到 {paths.link_source} 的 {item}"
+                problems.append(f"Failed to read config.toml of {inst.name}: {inst.settings_error}")
+            problems += [f"{inst.name} is not linked to {item} in {paths.link_source}"
                          for item in inst.broken_links(paths)]
         return problems
     default = paths.root / DEFAULT_INSTANCE
     if not _points_to(paths.home / ".claude", default):
-        problems.append(f"~/.claude 没有指向 {DEFAULT_INSTANCE}："
-                        "直接运行 claude 时用的不是它的配置和登录")
+        problems.append(f"~/.claude does not point to {DEFAULT_INSTANCE}: "
+                        "running claude directly does not use its settings and login")
     if not _points_to(paths.home / ".claude.json", default / ".claude.json"):
-        problems.append(f"~/.claude.json 没有指向 {DEFAULT_INSTANCE}/.claude.json："
-                        "它的状态会写到别处")
-    problems += [f"共享目录里缺少 {i}：所有实例都用不到它" for i in ("plugins", "projects")
-                 if not (paths.link_source / i).exists()]
+        problems.append(f"~/.claude.json does not point to {DEFAULT_INSTANCE}/.claude.json: "
+                        "its state is written elsewhere")
+    problems += [f"The shared directory is missing {i}: no instance can use it"
+                 for i in ("plugins", "projects") if not (paths.link_source / i).exists()]
     if not _writable(shared.settings_path):
-        problems.append(f"共享设置 {shared.settings_path} 没有写权限："
-                        "共享层的 Setting 和 Plugin 改不了")
+        problems.append(f"Shared settings {shared.settings_path} are not writable: "
+                        "the shared Setting and Plugin cannot be changed")
     native = [(paths.claude_system / "CLAUDE.md", shared.prompt_path, "Prompt"),
               (paths.claude_system / ".claude/skills", shared.skills_dir, "Skill")]
-    problems += [f"共享 {part} 没有接入：{link} 应软链到 {target}"
+    problems += [f"Shared {part} is not wired in: {link} should be a symlink to {target}"
                  for link, target, part in native if not _points_to(link, target)]
     try:
         shared_mcp = list_mcp(paths, shared)
     except (OSError, ValueError) as e:
-        problems.append(f"共享 MCP {shared.mcp_path} 读取失败：{e}")
+        problems.append(f"Failed to read shared MCP {shared.mcp_path}: {e}")
         shared_mcp = {}
     for inst in list_instances(paths):
         if inst.settings_error:
-            problems.append(f"{inst.name} 的配置不是合法 JSON：这个实例启动会出错，"
-                            "选中后从“操作”菜单选择“编辑”修改")
-        problems += [f"{inst.name} 没有连到共享的 {item}：这个实例看不到共享的 {item}"
+            problems.append(f"The settings of {inst.name} are not valid JSON: this instance "
+                            "will fail to start; select it and choose Edit from the Actions menu")
+        problems += [f"{inst.name} is not linked to the shared {item}: "
+                     f"it cannot see the shared {item}"
                      for item in inst.broken_links(paths)]
-        problems += [f"{inst.name} 的 {own.name} 仍软链到共享层：共享内容会加载两次，"
-                     f"删掉这个软链即可"
+        problems += [f"{own.name} of {inst.name} is still symlinked to the shared layer: "
+                     "shared content loads twice; delete this symlink"
                      for own, target in ((inst.prompt_path, shared.prompt_path),
                                          (inst.skills_dir, shared.skills_dir))
                      if _points_to(own, target)]
@@ -819,6 +836,7 @@ def find_problems(paths: Paths) -> list[str]:
         except (OSError, ValueError):
             continue
         if stale := [n for n, c in shared_mcp.items() if servers.get(n) != c]:
-            problems.append(f"{inst.name} 没有同步共享 MCP 的 {'、'.join(stale)}："
-                            "在 Shared 页的 MCP 从“操作”菜单选择“编辑”，保存一次即可同步")
+            problems.append(f"{inst.name} has not synced the shared MCP {', '.join(stale)}: on the "
+                            "Shared page, choose Edit for MCP from the Actions menu and save "
+                            "once to sync")
     return problems

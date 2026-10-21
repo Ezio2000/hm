@@ -51,7 +51,7 @@ async def test_tui_edit_and_launch(paths, mock_auth_status):
     app = HarnessManager(paths)
     async with app.run_test() as pilot:
         assert app.query_one(InstanceTable).row_count == 3
-        app.query_one("#actions", Select).value = "编辑"
+        app.query_one("#actions", Select).value = "Edit"
         await pilot.pause()
         assert isinstance(app.screen, EditScreen)
         app.screen.query_one(TextArea).text = '{"model": "haiku"}'
@@ -63,7 +63,7 @@ async def test_tui_edit_and_launch(paths, mock_auth_status):
         await app.workers.wait_for_complete()
         assert app.scope == "usage-tab"
         await pilot.click("#--content-tab-instance")
-        app.query_one("#actions", Select).value = "启动实例"
+        app.query_one("#actions", Select).value = "Launch instance"
         await pilot.pause()
     assert app.return_value.name == "claude-1"
     assert app.return_value.model == "haiku"
@@ -95,7 +95,8 @@ def test_usage_report(paths, monkeypatch):
     assert all(row["requests"] == 1 and row["output"] == 20 for row in report)
     assert sum(row["cost"] for row in report) == pytest.approx(60 / 1e6)
 
-    # 实例筛选必须在解析前生效；未扫描的另一客户端缓存仍需保留。
+    # The instance filter must apply before parsing; the other, unscanned client's cache
+    # must be kept.
     session_env = paths.root / "claude-2/session-env/claude-smoke"
     session_env.mkdir(parents=True)
     codex_log = codex / "sessions/smoke.jsonl"
@@ -103,7 +104,7 @@ def test_usage_report(paths, monkeypatch):
     original = usage.parse_codex
 
     def unexpected_parse(path):
-        pytest.fail(f"Claude 查询不应解析 Codex 日志：{path}")
+        pytest.fail(f"A Claude query must not parse Codex logs: {path}")
 
     monkeypatch.setattr(usage, "parse_codex", unexpected_parse)
     filtered = usage.report(paths, ["instance"], instance="claude-2")
@@ -116,7 +117,7 @@ def test_usage_report(paths, monkeypatch):
     monkeypatch.setattr(usage, "parse_codex", original)
     assert len(usage.report(paths, ["type"])) == 2
     assert usage.report(paths, ["type"], engine="codex", instance="claude-2") == []
-    with pytest.raises(ValueError, match="实例不存在"):
+    with pytest.raises(ValueError, match="Instance not found"):
         usage.report(paths, ["type"], instance="missing")
 
 

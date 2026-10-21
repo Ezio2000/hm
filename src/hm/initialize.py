@@ -1,4 +1,5 @@
-"""初始化一个客户端：检查冲突、准备权限、接入默认实例和共享目录。"""
+"""Initialize one client: check conflicts, prepare permissions, adopt the default instance
+and the shared directories."""
 
 import json
 import os
@@ -26,9 +27,10 @@ def _check(source: Path, target: Path) -> None:
     if _linked(source, target):
         return
     if source.is_symlink():
-        raise ValueError(f"软链指向其他位置，请先整理：{source}")
+        raise ValueError(f"Symlink points elsewhere; resolve it first: {source}")
     if _exists(source) and _exists(target):
-        raise ValueError(f"两处都有内容，请先整理冲突：{source} 和 {target}")
+        raise ValueError(
+            f"Both locations have content; resolve the conflict first: {source} and {target}")
 
 
 def _file(path: Path, text: str) -> None:
@@ -57,7 +59,7 @@ def _read(path: Path, *, toml: bool = False) -> dict:
         return {}
     data = tomlkit.parse(path.read_text()) if toml else json.loads(path.read_text())
     if not isinstance(data, dict):
-        raise ValueError(f"配置顶层必须为对象：{path}")
+        raise ValueError(f"Top level of the configuration must be an object: {path}")
     return data
 
 
@@ -73,8 +75,10 @@ def _permissions(directories: list[Path], files: list[Path]) -> None:
     if not privileged:
         return
     if sys.platform != "darwin":
-        raise OSError("系统共享目录不可写；管理员授权仅支持 macOS")
-    print("准备目录权限，请在 macOS 对话框中授权：" + "、".join(map(str, required)))
+        raise OSError(
+            "System shared directory is not writable; admin authorization is macOS-only")
+    print("Preparing directory permissions; authorize in the macOS dialog: "
+          + ", ".join(map(str, required)))
     commands = []
     for path in dict.fromkeys(required):
         quoted = shlex.quote(str(path))
@@ -88,14 +92,15 @@ def _permissions(directories: list[Path], files: list[Path]) -> None:
          "set -e\n" + "\n".join(commands)], capture_output=True, text=True,
     )
     if result.returncode or any(not os.access(p, os.W_OK) for p in required):
-        raise OSError(f"管理员授权取消或失败，尚未迁移配置：{result.stderr.strip()}")
+        raise OSError("Admin authorization canceled or failed; configuration not migrated: "
+                      f"{result.stderr.strip()}")
 
 
 def run(paths: Paths) -> None:
     if paths.engine not in ("claude", "codex"):
-        raise ValueError("engine 必须为 claude 或 codex")
+        raise ValueError("engine must be claude or codex")
     if shutil.which(paths.engine) is None:
-        raise ValueError(f"找不到客户端 {paths.engine}，请先安装并确保它在 PATH 中")
+        raise ValueError(f"Client {paths.engine} not found; install it and make sure it is on PATH")
     shared = profiles.load_shared(paths)
     _read(shared.settings_path, toml=paths.engine == "codex")
     if paths.engine == "codex":
@@ -125,15 +130,15 @@ def run(paths: Paths) -> None:
     _check(system_skills, shared.skills_dir)
     common = _read(shared.mcp_path).get("mcpServers", {})
     if not isinstance(common, dict):
-        raise ValueError(f"共享 MCP 必须为对象：{shared.mcp_path}")
+        raise ValueError(f"Shared MCP must be an object: {shared.mcp_path}")
     states = {i.mcp_path: _read(i.mcp_path) for i in profiles.list_instances(paths)}
     states[default / ".claude.json"] = _read(state_source)
     for path, data in states.items():
         own = data.get("mcpServers", {})
         if not isinstance(own, dict):
-            raise ValueError(f"MCP 必须为对象：{path}")
+            raise ValueError(f"MCP must be an object: {path}")
         if conflict := [k for k in own.keys() & common.keys() if own[k] != common[k]]:
-            raise ValueError(f"{path} 与共享 MCP 冲突：{', '.join(conflict)}")
+            raise ValueError(f"{path} conflicts with shared MCP: {', '.join(conflict)}")
     _permissions(
         [paths.claude_system, paths.claude_system / ".claude",
          *[p for p in (system_skills, shared.skills_dir) if p.is_dir()]],

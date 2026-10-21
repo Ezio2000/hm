@@ -14,8 +14,9 @@ def mock_auth_status(monkeypatch):
 
 @pytest.fixture
 def paths(tmp_path: Path) -> Paths:
-    """仿照真实结构：共享层接入 managed 目录，claude-1（~/.claude 指向它）、
-    一个官方实例和一个第三方实例；Codex 系统目录可写但还没有配置。"""
+    """Mimic the real layout: the shared layer is wired to the managed directory, with claude-1
+    (~/.claude points to it), an official instance and a third-party instance; the Codex
+    system directory is writable but not yet configured."""
     p0 = Paths(tmp_path, tmp_path / "ClaudeCode", tmp_path / "etc-codex")
     shared = p0.link_source
     for item in LINKED_ITEMS:

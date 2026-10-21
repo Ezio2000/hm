@@ -19,11 +19,12 @@ UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"
 
 
 def _span(text: str) -> timedelta | None:
-    """7d、5m、20s 这样的时间跨度；all 表示不限。"""
+    """A time span such as 7d, 5m or 20s; all means no limit."""
     if text == "all":
         return None
     if not (match := re.fullmatch(rf"(\d+)([{''.join(UNITS)}])", text)):
-        raise argparse.ArgumentTypeError(f"应形如 7d、5m、20s（单位 s m h d w）或 all：{text}")
+        raise argparse.ArgumentTypeError(
+            f"Expected a span like 7d, 5m or 20s (units s m h d w) or all: {text}")
     return timedelta(**{UNITS[match[2]]: int(match[1])})
 
 
@@ -57,7 +58,7 @@ def _quota(args: argparse.Namespace) -> list[dict[str, Any]]:
     if args.name:
         instances = [i for i in instances if i.name == args.name]
         if not instances:
-            raise SystemExit(f"实例不存在：{args.name}")
+            raise SystemExit(f"Instance not found: {args.name}")
     return quota.read_all(instances)
 
 
@@ -82,34 +83,37 @@ def _quota_text(results: list[dict[str, Any]]) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="hm：Claude Code / Codex 实例管理")
+    parser = argparse.ArgumentParser(description="hm: manage Claude Code and Codex instances")
     commands = parser.add_subparsers(dest="command", metavar="[command]")
-    commands.add_parser("mcp", help="启动 stdio MCP 服务")
-    init_parser = commands.add_parser("init", help="初始化或迁移已有配置；必要时请求管理员授权")
+    commands.add_parser("mcp", help="start the stdio MCP server")
+    init_parser = commands.add_parser(
+        "init", help="initialize or adopt an existing configuration; may ask for admin rights")
     init_parser.add_argument("--engine", required=True, choices=["claude", "codex"],
-                             help="要初始化的客户端")
-    usage_parser = commands.add_parser("usage", help="按会话日志统计用量和费用")
-    speed_parser = commands.add_parser("speed", help="按会话日志统计生成速度和首 token 延迟")
+                             help="client to initialize")
+    usage_parser = commands.add_parser("usage", help="token usage and cost from session logs")
+    speed_parser = commands.add_parser(
+        "speed", help="generation speed and time to first token from session logs")
     for sub in (usage_parser, speed_parser):
         sub.add_argument("--by", nargs="+", choices=usage.DIMENSIONS,
-                         help=("分组维度，时间粒度最多一个；speed 默认 instance model，"
-                               "usage 跨度小于 1 天默认 hour，否则 day"))
+                         help=("grouping dimensions, at most one time granularity; defaults: "
+                               "speed uses instance model, usage uses hour for spans under "
+                               "1 day, otherwise day"))
         sub.add_argument("--since", type=_span, default=_span("7d"), metavar="SPAN",
-                         help="最近多久，如 7d、12h、5m、20s，all 不限（默认 7d）")
+                         help="time span such as 7d, 12h, 5m or 20s; all for no limit (default 7d)")
         sub.add_argument("--engine", choices=["claude", "codex"])
         sub.add_argument("--limit", type=int, default=10,
-                         help="最多输出几行，按最近请求时间倒序取，0 不限（默认 10）")
-        sub.add_argument("--instance", help="只看该实例，如 claude-2")
-    instances_parser = commands.add_parser("instances", help="列出实例")
-    quota_parser = commands.add_parser("quota", help="查询套餐额度窗口和账户余额")
-    quota_parser.add_argument("name", nargs="?", help="实例名，缺省查询全部")
+                         help="maximum rows, most recent first; 0 for no limit (default 10)")
+        sub.add_argument("--instance", help="only this instance, e.g. claude-2")
+    instances_parser = commands.add_parser("instances", help="list instances")
+    quota_parser = commands.add_parser("quota", help="plan quota windows and account balances")
+    quota_parser.add_argument("name", nargs="?", help="instance name; all instances if omitted")
     for sub in (usage_parser, speed_parser, quota_parser, instances_parser):
-        sub.add_argument("--json", action="store_true", help="输出 JSON")
+        sub.add_argument("--json", action="store_true", help="output JSON")
     args = parser.parse_args()
     if args.command == "init":
         try:
             initialize.run(profiles.Paths.default(args.engine))
-            print(f"{args.engine} 初始化完成")
+            print(f"{args.engine} initialized")
         except (OSError, ValueError) as error:
             parser.error(str(error))
     elif args.command == "mcp":
@@ -135,7 +139,7 @@ def main() -> None:
         except ValueError as error:
             parser.error(str(error))
         if is_usage and args.limit and len(data) > args.limit:
-            print(f"仅显示前 {args.limit} 行，共 {len(data)} 行（--limit 0 显示全部）",
+            print(f"Showing the first {args.limit} of {len(data)} rows (--limit 0 shows all)",
                   file=sys.stderr)
             data = data[:args.limit]
         if args.command == "speed":

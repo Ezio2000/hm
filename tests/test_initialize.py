@@ -52,7 +52,7 @@ def test_initialize_migration(tmp_path, monkeypatch):
     assert claude.is_symlink() and inst.model == "opus"
     assert (claude / ".credentials.json").read_text() == "login-token"
     assert (claude / "projects/session.jsonl").read_text() == "session"
-    assert result.skills == [("personal", "实例")]
+    assert result.skills == [("personal", "Instance")]
     assert [text for _, text in result.prompt] == ["shared prompt", "personal prompt"]
     assert json.loads((tmp_path / ".claude.json").read_text())["loggedIn"]
     assert {p.name: p.read_bytes() for p in codex.iterdir()} == before_codex

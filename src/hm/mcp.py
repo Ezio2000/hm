@@ -197,7 +197,8 @@ def usage_report(
     days 为最近几天（含今天，None 不限）。每行含 requests、input（未命中缓存）、output、
     cache_read、cache_write、cost（美元，按 ~/.hm/pricing.json，未配价格为 null）、
     speed（tok/s）、first_token（毫秒中位数）。session 取结果里的 session 值，只看该会话；
-    instance 只看该实例（Claude 会话按实例的 session-env、file-history、history.jsonl 对应，对不上的为 unknown）。"""
+    instance 只看该实例（Claude 会话按实例的 session-env、file-history、history.jsonl 对应，
+    对不上的为 unknown）。"""
     return usage.report(profiles.Paths.default(), list(by), usage.since_days(days), engine,
                         session, instance)
 

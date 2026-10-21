@@ -1,14 +1,30 @@
 # hm · harness-manager
 
-在终端统一管理 Claude Code 和 Codex 的实例、共享配置、Plugin、Skill、MCP、Prompt，以及用量和额度。支持 macOS，要求 Python 3.14+、uv，以及已安装的对应客户端。
+A single control plane for [Claude Code](https://claude.com/claude-code) and Codex on macOS. hm manages instances, providers, credentials, models, settings, plugins, skills, MCP servers and prompts, and reports usage, cost, generation speed and quota from local session logs.
 
-从 GitHub 安装：
+## Features
+
+- **Instances.** Run multiple isolated Claude Code and Codex instances side by side, each with its own provider and credentials, and launch them from a terminal UI.
+- **Layered configuration.** Settings, plugins, skills, MCP servers and prompts are defined once in a per-client shared layer. An instance's effective configuration is its own layer combined with the shared layer.
+- **Usage analytics.** Token counts, cost, generation speed (tok/s) and time to first token, grouped by time, model, session or instance. Cost is computed at query time from a user-editable price table.
+- **Quota.** Plan windows and account balances across Anthropic, ChatGPT, DeepSeek, Z.ai, Kimi and MiniMax.
+- **MCP server.** Every capability above is exposed over stdio MCP, so agents can read and change configuration through the same interface.
+
+## Requirements
+
+- macOS
+- Python 3.14+ and [uv](https://docs.astral.sh/uv/)
+- Claude Code and/or Codex installed
+
+## Installation
 
 ```sh
 uv tool install 'git+https://github.com/Ezio2000/hm.git'
 ```
 
-安装后，按需初始化对应客户端，再打开界面：
+## Getting started
+
+Initialize each client you use, then open the UI:
 
 ```sh
 hm init --engine claude
@@ -16,24 +32,60 @@ hm init --engine codex
 hm
 ```
 
-每次初始化一个客户端。没有配置时创建默认实例；已有配置时直接接入，保留登录、会话、实例 Prompt 和 Skill。重复执行不会覆盖已有配置。
+`hm init` is idempotent. With no existing configuration it creates a default instance; otherwise it adopts the existing one and preserves logins, sessions, instance prompts and skills. It never overwrites existing configuration.
 
-Claude 的 `~/.claude` 和 `~/.claude.json` 迁入 `~/.claude-profiles/claude-1`，原位置建立软链；插件和会话资源接入 `~/.claude-profiles/shared`。Codex 默认实例保留在 `~/.codex`。
+## Layout
 
-系统共享配置分别使用 `/Library/Application Support/ClaudeCode` 和 `/etc/codex`。目录不可写时弹出 macOS 管理员授权，取消后不迁移配置。初始化不修改 `.zshrc`；实例可从 hm 界面启动。
+| Client | Default instance | Other instances | Shared layer |
+| --- | --- | --- | --- |
+| Claude Code | `~/.claude-profiles/claude-1` (`~/.claude` and `~/.claude.json` are symlinked to it) | `~/.claude-profiles/<name>`, selected via `CLAUDE_CONFIG_DIR` | `/Library/Application Support/ClaudeCode` and `~/.claude-profiles/shared` |
+| Codex | `~/.codex` | `~/.codex-profiles/<name>`, selected via `CODEX_HOME` | `/etc/codex/config.toml` |
 
-从本地会话日志查看速度（默认最近 7 天，按实例和模型分组）：
+Initialization requests macOS administrator authorization when a system directory is not writable; if you cancel, no configuration is migrated. It does not modify `.zshrc`. Instances are launched from the hm UI.
+
+## CLI
+
+| Command | Description |
+| --- | --- |
+| `hm` | Open the terminal UI |
+| `hm init --engine {claude,codex}` | Initialize or adopt an existing configuration |
+| `hm instances` | List instances |
+| `hm usage` | Tokens and cost from session logs |
+| `hm speed` | Generation speed and time to first token |
+| `hm quota [name]` | Plan windows and account balances |
+| `hm mcp` | Start the stdio MCP server |
+
+`usage`, `speed` and `quota` accept `--json`. `usage` and `speed` share these options:
+
+| Option | Description |
+| --- | --- |
+| `--by` | Group by `second`, `hour`, `day`, `week`, `month`, `type`, `model`, `session` or `instance`; at most one time granularity. Defaults: `instance model` for `speed`; `hour` or `day` for `usage`, depending on the span. |
+| `--since` | Time span such as `7d`, `12h`, `5m` or `20s`; `all` for no limit. Default `7d`. |
+| `--engine` | Restrict to `claude` or `codex`. |
+| `--instance` | Restrict to one instance, for example `claude-2`. |
+| `--limit` | Maximum rows, most recent first; `0` for no limit. Default `10`. |
 
 ```sh
-hm speed
+hm usage --since 7d
 hm speed --instance claude-2 --since 1h
 hm speed --by day model --since 7d --limit 0 --json
 ```
 
-支持 `--engine claude|codex` 筛选。`speed` 单位为 tok/s，沿用用量统计口径；
-`first_token` 为首 token 延迟中位数（毫秒），缺少有效计时数据时显示 `-`（JSON 为 `null`）。
+Speed is reported in tok/s and `first_token` is the median time to first token in milliseconds. Both are estimated from log timestamps and show `-` (`null` in JSON) when no valid timing data exists. Only requests with at least 200 output tokens and at least one second of duration contribute to speed.
 
-本地开发：
+### Attribution
+
+Claude Code writes all sessions to a shared `projects` directory, so hm attributes each session to an instance by matching its session ID against the instance's `session-env`, `file-history` and `history.jsonl`. Sessions that match no instance are reported as `unknown`. Codex sessions are attributed by the instance directory that holds the log.
+
+### Pricing
+
+Cost is computed from `~/.hm/pricing.json` (USD per million tokens for `input`, `output`, `cache_read` and `cache_write`). Model names match exactly first, then by progressively dropping trailing `-` segments, so `claude-opus-5-5` falls back to `claude-opus-5`. Changes take effect immediately.
+
+## MCP server
+
+`hm mcp` serves the following tools over stdio: `overview`, `read_layer`, `save_settings`, `save_mcp`, `save_prompt`, `set_plugin`, `delete_skill`, `promote_skill`, `read_credentials`, `read_result`, `check_status`, `create_instance`, `delete_instance`, `reorder_instances`, `launch_instance`, `read_pricing`, `save_pricing`, `usage_report` and `read_quota`.
+
+## Development
 
 ```sh
 uv tool install --editable .
@@ -42,4 +94,6 @@ uv run --frozen pytest -q
 uv build
 ```
 
-MIT 许可证，见 [LICENSE](LICENSE)。
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import statistics
 from collections.abc import Callable, Iterator
@@ -258,12 +259,17 @@ def price_of(pricing: dict[str, dict[str, float]], model: str) -> dict[str, floa
 
 def _instance_resolver(paths: Paths) -> Callable[[dict[str, Any]], str]:
     """记录所属实例：Codex 日志在实例自己的目录；Claude 日志共享，按各实例
-    session-env、file-history 里的会话 ID 对应，对不上的记为 unknown。"""
+    session-env、file-history、history.jsonl 里的会话 ID 对应，对不上的记为 unknown。"""
     claude = {}
     for inst in list_instances(for_engine(paths, "claude")):
         for folder in ("session-env", "file-history"):
             for entry in (inst.path / folder).glob("*"):
                 claude.setdefault(entry.name, inst.name)
+        history = inst.path / "history.jsonl"
+        if history.exists():
+            for line in history.read_text(errors="ignore").splitlines():
+                if match := re.search(r'"sessionId":"([^"]+)"', line):
+                    claude.setdefault(match[1], inst.name)
     codex = [(f"{inst.path}/", inst.name) for inst in list_instances(for_engine(paths, "codex"))]
 
     def resolve(record: dict[str, Any]) -> str:

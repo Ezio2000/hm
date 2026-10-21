@@ -17,11 +17,11 @@ def _instance(name: str) -> profiles.Instance:
     for inst in profiles.list_all_instances(profiles.Paths.default()):
         if inst.name == name:
             return inst
-    raise ValueError(f"实例不存在：{name}")
+    raise ValueError(f"Instance not found: {name}")
 
 
 def _layer(target: str) -> tuple[profiles.Paths, profiles.Layer]:
-    """target 是实例名，或 shared/claude、shared/codex。"""
+    """target is an instance name, or shared/claude or shared/codex."""
     if target.startswith("shared/"):
         paths = profiles.Paths.default(target.removeprefix("shared/"))
         return paths, profiles.load_shared(paths)
@@ -42,8 +42,9 @@ def _summary(paths: profiles.Paths, layer: profiles.Layer) -> dict[str, Any]:
 
 @server.tool()
 def overview() -> dict[str, Any]:
-    """读取最新实例和共享层概况。每个实例和 shared/claude、shared/codex 都有
-    Setting、Plugin、Skill、MCP、Prompt 五部分，实例生效结果 = 实例层 + 共享层。"""
+    """Read the current instances and shared layers. Every instance, shared/claude and
+    shared/codex has five parts: Setting, Plugin, Skill, MCP and Prompt. An instance's
+    effective result = its own layer + the shared layer."""
     paths = profiles.Paths.default()
     return {
         "instances": [
@@ -61,9 +62,10 @@ def overview() -> dict[str, Any]:
 
 @server.tool()
 def read_layer(target: str) -> dict[str, Any]:
-    """读取一层的完整内容：配置（含凭据）、插件版本和启停、技能及目录、MCP、Prompt。
+    """Read the full content of one layer: settings (including credentials), plugin versions
+    and enabled state, skills and their directory, MCP servers, and Prompt.
 
-    target 为实例名，或 shared/claude、shared/codex。
+    target is an instance name, or shared/claude or shared/codex.
     """
     paths, layer = _layer(target)
     if layer.settings_error:
@@ -79,93 +81,102 @@ def read_layer(target: str) -> dict[str, Any]:
 
 @server.tool()
 def read_result(name: str) -> dict[str, Any]:
-    """读取实例叠加共享层后实际生效的配置、插件、技能、MCP 和 Prompt。"""
+    """Read the effective settings, plugins, skills, MCP servers and Prompt of an instance
+    after its own layer is combined with the shared layer."""
     inst = _instance(name)
     return asdict(profiles.resolve(profiles.Paths.default(inst.engine), inst))
 
 
 @server.tool()
 def read_credentials(name: str) -> dict[str, Any]:
-    """快速读取指定实例的 URL、API Key 或 OAuth access token（完整明文）及来源。
+    """Quickly read an instance's URL, API key or OAuth access token (full plaintext) and
+    where each came from.
 
-    读取配置、Claude macOS 钥匙串或本地登录文件；不刷新 token。
-    未找到的凭据字段返回 null；不代表凭据已验证或未过期。
+    Reads the settings, the Claude macOS keychain or local login files; never refreshes a
+    token. Credential fields that are not found are null; a value is not verified and may
+    have expired.
     """
     return profiles.read_credentials(_instance(name))
 
 
 @server.tool()
 def save_settings(target: str, settings: dict[str, Any]) -> str:
-    """完整替换一层的配置；传入对象，自动保存为 JSON 或 TOML。先读取并保留其他字段。
+    """Replace a layer's settings in full; pass an object and it is saved as JSON or TOML.
+    Read first and keep the other fields.
 
-    target 为实例名，或 shared/claude（managed-settings.json）、
-    shared/codex（/etc/codex/config.toml）。
+    target is an instance name, or shared/claude (managed-settings.json) or
+    shared/codex (/etc/codex/config.toml).
     """
     _, layer = _layer(target)
     text = (tomlkit.dumps(settings) if layer.engine == "codex"
             else json.dumps(settings, ensure_ascii=False, indent=2))
     profiles.save_settings(layer, text)
-    return f"已保存 {layer.label} 的配置"
+    return f"Saved settings of {layer.label}"
 
 
 @server.tool()
 def save_mcp(target: str, servers: dict[str, Any]) -> str:
-    """完整替换一层自己的用户级 MCP（名称 → 配置）。
+    """Replace a layer's own user-level MCP servers in full (name -> config).
 
-    shared/claude 保存后同步进所有 Claude 实例；实例里不能与共享 MCP 重名。
+    shared/claude is synced into every Claude instance after saving; an instance cannot
+    reuse the name of a shared MCP server.
     """
     paths, layer = _layer(target)
     profiles.save_mcp(paths, layer, servers)
-    return f"已保存 {layer.label} 的 MCP"
+    return f"Saved MCP of {layer.label}"
 
 
 @server.tool()
 def save_prompt(target: str, text: str) -> str:
-    """替换一层的 Prompt：实例为 CLAUDE.md / AGENTS.md，shared/claude 为共享 CLAUDE.md，
-    shared/codex 为系统配置的 developer_instructions。"""
+    """Replace a layer's Prompt: CLAUDE.md / AGENTS.md for an instance, the shared CLAUDE.md
+    for shared/claude, and developer_instructions in the system config for shared/codex."""
     _, layer = _layer(target)
     profiles.save_prompt(layer, text)
-    return f"已保存 {layer.label} 的 Prompt"
+    return f"Saved Prompt of {layer.label}"
 
 
 @server.tool()
 def set_plugin(target: str, plugin: str, enabled: bool) -> str:
-    """启停一层的插件。实例层明确保存启停；共享层关闭即删除条目。"""
+    """Enable or disable a plugin in one layer. An instance layer stores the state
+    explicitly; in a shared layer, disabling removes the entry."""
     paths, layer = _layer(target)
     if plugin not in {p.id for p in profiles.list_plugins(paths, layer)}:
-        raise ValueError(f"插件不存在：{plugin}")
+        raise ValueError(f"Plugin not found: {plugin}")
     profiles.set_plugin(layer, plugin, enabled)
-    return f"已更新 {layer.label} 的 {plugin}"
+    return f"Updated {plugin} of {layer.label}"
 
 
 @server.tool()
 def delete_skill(target: str, skill: str) -> str:
-    """删除实例或共享层的技能目录；软链技能只删除软链。
+    """Delete a skill directory from an instance or a shared layer; for a symlinked skill
+    only the symlink is removed.
 
-    target 为实例名，或 shared/claude、shared/codex。
+    target is an instance name, or shared/claude or shared/codex.
     """
     _, layer = _layer(target)
     if skill not in profiles.list_skills(layer):
-        raise ValueError(f"技能不存在：{skill}")
+        raise ValueError(f"Skill not found: {skill}")
     profiles.delete_skill(layer, skill)
-    return f"已删除 {layer.label} 的技能 {skill}"
+    return f"Deleted skill {skill} of {layer.label}"
 
 
 @server.tool()
 def promote_skill(name: str, skill: str) -> str:
-    """把指定实例的技能移到同类客户端共享层；共享层已有同名技能时不覆盖。"""
+    """Move a skill from an instance to the shared layer of the same client; an existing
+    shared skill with the same name is not overwritten."""
     inst = _instance(name)
     if skill not in profiles.list_skills(inst):
-        raise ValueError(f"技能不存在：{skill}")
+        raise ValueError(f"Skill not found: {skill}")
     profiles.promote_skill(profiles.Paths.default(inst.engine), inst, skill)
-    return f"{skill} 已移到 shared/{inst.engine}"
+    return f"Moved {skill} to shared/{inst.engine}"
 
 
 @server.tool()
 def read_pricing() -> dict[str, dict[str, float]]:
-    """读取 Usage 的模型单价，单位为每百万 token 美元。
+    """Read the per-model prices used by Usage, in USD per million tokens.
 
-    每个模型含 input、output、cache_read、cache_write；未配置价格时返回日志中模型的零价模板。
+    Each model has input, output, cache_read and cache_write; when no prices are configured,
+    a zero-price template of the models found in the logs is returned.
     """
     paths = profiles.Paths.default()
     if not (paths.hm_dir / "pricing.json").exists():
@@ -175,13 +186,14 @@ def read_pricing() -> dict[str, dict[str, float]]:
 
 @server.tool()
 def save_pricing(pricing: dict[str, dict[str, float]]) -> str:
-    """完整替换 Usage 的模型单价；先 read_pricing 并保留其他模型。
+    """Replace the per-model prices used by Usage in full; call read_pricing first and keep
+    the other models.
 
-    每个模型必须含 input、output、cache_read、cache_write，单位为每百万 token 美元。
-    保存后再次查询 Usage 即使用新价格。
+    Every model must have input, output, cache_read and cache_write, in USD per million
+    tokens. The next Usage query uses the new prices.
     """
     usage.save_pricing(profiles.Paths.default(), json.dumps(pricing, ensure_ascii=False, indent=2))
-    return "已保存 Usage 价格"
+    return "Saved Usage pricing"
 
 
 @server.tool()
@@ -193,22 +205,26 @@ def usage_report(
     session: str | None = None,
     instance: str | None = None,
 ) -> list[dict[str, Any]]:
-    """按会话日志统计用量，by 为分组维度（时间粒度最多选一个，second 即逐条请求），
-    days 为最近几天（含今天，None 不限）。每行含 requests、input（未命中缓存）、output、
-    cache_read、cache_write、cost（美元，按 ~/.hm/pricing.json，未配价格为 null）、
-    speed（tok/s）、first_token（毫秒中位数）。session 取结果里的 session 值，只看该会话；
-    instance 只看该实例（Claude 会话按实例的 session-env、file-history、history.jsonl 对应，
-    对不上的为 unknown）。"""
+    """Aggregate usage from session logs. by lists the grouping dimensions (at most one time
+    granularity; second means per request); days is the last N days including today (None
+    for no limit). Each row has requests, input (cache misses), output, cache_read,
+    cache_write, cost (USD from ~/.hm/pricing.json, null when no price is configured),
+    speed (tok/s) and first_token (median, milliseconds). session takes a session value from
+    the results and restricts to that session; instance restricts to that instance (Claude
+    sessions are matched to instances by session-env, file-history and history.jsonl;
+    unmatched ones are unknown)."""
     return usage.report(profiles.Paths.default(), list(by), usage.since_days(days), engine,
                         session, instance)
 
 
 @server.tool()
 def read_quota(name: str | None = None) -> list[dict[str, Any]]:
-    """查询实例的套餐额度窗口或账户余额；不传名称查询全部实例，并发请求。
+    """Query an instance's plan quota windows or account balance; without a name, query all
+    instances concurrently.
 
-    每项含 windows（label、used_percent、resets_at，UTC）和 balance（amount、currency）；
-    供应商未识别时 supported 为 false，请求失败时返回 error，不影响其他实例。
+    Each item has windows (label, used_percent, resets_at in UTC) and balance (amount,
+    currency); supported is false when the provider is not recognized, and error is returned
+    when a request fails, without affecting other instances.
     """
     paths = profiles.Paths.default()
     instances = [_instance(name)] if name is not None else profiles.list_all_instances(paths)
@@ -217,53 +233,58 @@ def read_quota(name: str | None = None) -> list[dict[str, Any]]:
 
 @server.tool()
 def launch_instance(name: str, cwd: str) -> str:
-    """在 macOS Terminal 新窗口启动实例，不替换 MCP 服务。cwd 为启动后的工作目录。"""
+    """Launch an instance in a new macOS Terminal window without replacing the MCP server.
+    cwd is the working directory after launch."""
     terminal = profiles.launch_instance(_instance(name), Path(cwd))
-    return f"已在 Terminal 启动 {name}（{terminal}）"
+    return f"Launched {name} in Terminal ({terminal})"
 
 
 @server.tool()
 def create_instance(
     name: str, template: str, model: str, base_url: str = "", token: str = "",
 ) -> str:
-    """复用模板的客户端及通用设置创建实例。官方账号地址和 token 留空。
+    """Create an instance that reuses the template's client and common settings. Leave the
+    URL and token empty for an official account.
 
-    Codex 第三方使用 Responses API 地址；Claude Code 使用 Anthropic 兼容地址。
+    Third-party Codex providers use a Responses API URL; Claude Code uses an
+    Anthropic-compatible URL.
     """
     source = _instance(template)
     inst = profiles.create_instance(
         profiles.Paths.default(source.engine), name, source, base_url, token, model,
     )
-    return f"已创建 {name}，启动命令：{inst.command}"
+    return f"Created {name}; launch command: {inst.command}"
 
 
 @server.tool()
 def delete_instance(name: str) -> str:
-    """删除实例及本地数据；官方实例先登出。默认 claude-1、codex-1 不可删除。"""
+    """Delete an instance and its local data; an official instance is logged out first.
+    The defaults claude-1 and codex-1 cannot be deleted."""
     profiles.delete_instance(_instance(name))
-    return f"已删除 {name}"
+    return f"Deleted {name}"
 
 
 @server.tool()
 def reorder_instances(names: list[str]) -> str:
-    """设置实例顺序，必须包含全部现有实例且不能重复。"""
+    """Set the instance order; it must contain every existing instance exactly once."""
     paths = profiles.Paths.default()
     current = {i.name for i in profiles.list_all_instances(paths)}
     if len(names) != len(current) or set(names) != current:
-        raise ValueError("必须包含全部现有实例且不能重复")
+        raise ValueError("The order must contain every existing instance exactly once")
     profiles.save_order(paths, names)
-    return "已更新实例顺序"
+    return "Updated instance order"
 
 
 @server.tool()
 def check_status(name: str | None = None) -> dict[str, Any]:
-    """检查实例配置、软链和登录状态；不传名称检查全部。另返回全局问题（含共享层）。"""
+    """Check an instance's settings, symlinks and login state; without a name, check all.
+    Also returns global problems (including the shared layers)."""
     paths = profiles.Paths.default()
     instances = [_instance(name)] if name is not None else profiles.list_all_instances(paths)
     statuses = []
     for inst in instances:
         if inst.settings_error:
-            auth = {"error": "配置读取失败，未检查登录"}
+            auth = {"error": "Failed to read settings; login not checked"}
         elif inst.is_official:
             try:
                 auth = profiles.auth_status(inst)

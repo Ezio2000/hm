@@ -1,7 +1,7 @@
 [project]
 name = "hm"
 version = "0.1.0"
-description = "harness-manager：统一管理 Claude Code 和 Codex 实例"
+description = "harness-manager: unified management of Claude Code and Codex instances"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

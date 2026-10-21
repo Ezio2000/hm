@@ -22,6 +22,17 @@ Claude 的 `~/.claude` 和 `~/.claude.json` 迁入 `~/.claude-profiles/claude-1`
 
 系统共享配置分别使用 `/Library/Application Support/ClaudeCode` 和 `/etc/codex`。目录不可写时弹出 macOS 管理员授权，取消后不迁移配置。初始化不修改 `.zshrc`；实例可从 hm 界面启动。
 
+从本地会话日志查看速度（默认最近 7 天，按实例和模型分组）：
+
+```sh
+hm speed
+hm speed --instance claude-2 --since 1h
+hm speed --by day model --since 7d --limit 0 --json
+```
+
+支持 `--engine claude|codex` 筛选。`speed` 单位为 tok/s，沿用用量统计口径；
+`first_token` 为首 token 延迟中位数（毫秒），缺少有效计时数据时显示 `-`（JSON 为 `null`）。
+
 本地开发：
 
 ```sh

@@ -184,8 +184,8 @@ def _connect(paths: Paths) -> sqlite3.Connection:
     return db
 
 
-def sync(paths: Paths) -> None:
-    """重读新增或变化的日志文件，清掉已删除文件的记录。"""
+def sync(paths: Paths, engine: str | None = None) -> None:
+    """重读指定客户端新增或变化的日志文件，清掉已删除文件的记录。"""
     with _connect(paths) as db:
         if db.execute("pragma user_version").fetchone()[0] != CACHE_VERSION:
             db.execute("delete from records")
@@ -193,12 +193,15 @@ def sync(paths: Paths) -> None:
             db.execute(f"pragma user_version = {CACHE_VERSION}")
         known = {p: (s, m) for p, s, m in db.execute("select path, size, mtime from files")}
         seen = set()
-        for engine, file in _sources(paths):
-            key, stat = str(file), file.stat()
+        for source_engine, file in _sources(paths):
+            key = str(file)
             seen.add(key)
+            if engine and source_engine != engine:
+                continue
+            stat = file.stat()
             if known.get(key) == (stat.st_size, stat.st_mtime):
                 continue
-            records = parse_codex(file) if engine == "codex" else parse_claude(file)
+            records = parse_codex(file) if source_engine == "codex" else parse_claude(file)
             db.execute("delete from records where path = ?", (key,))
             db.executemany(f"insert into records values ({', '.join('?' * len(FIELDS))})",
                            [tuple({**r, "path": key}[f] for f in FIELDS) for r in records])
@@ -280,7 +283,16 @@ def report(paths: Paths, by: list[str], since: datetime | None = None,
         raise ValueError(f"不支持的维度：{unknown}，可选 {DIMENSIONS}")
     if sum(d in BUCKETS for d in by) > 1:
         raise ValueError("时间粒度只能选一个")
-    sync(paths)
+    if instance and instance != "unknown":
+        owner = next((inst for kind in ("claude", "codex")
+                      for inst in list_instances(for_engine(paths, kind))
+                      if inst.name == instance), None)
+        if owner is None:
+            raise ValueError(f"实例不存在：{instance}")
+        if engine and engine != owner.engine:
+            return []
+        engine = owner.engine
+    sync(paths, engine)
     pricing = load_pricing(paths)
     sql = f"select {', '.join(FIELDS)} from records where time >= ?"
     args: list[Any] = [int(since.timestamp() * 1000) if since else 0]

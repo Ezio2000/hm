@@ -89,18 +89,21 @@ def main() -> None:
     init_parser.add_argument("--engine", required=True, choices=["claude", "codex"],
                              help="要初始化的客户端")
     usage_parser = commands.add_parser("usage", help="按会话日志统计用量和费用")
-    usage_parser.add_argument("--by", nargs="+", choices=usage.DIMENSIONS,
-                              help="分组维度，时间粒度最多一个（跨度小于 1 天默认 hour，否则 day）")
-    usage_parser.add_argument("--since", type=_span, default=_span("7d"), metavar="SPAN",
-                              help="最近多久，如 7d、12h、5m、20s，all 不限（默认 7d）")
-    usage_parser.add_argument("--engine", choices=["claude", "codex"])
-    usage_parser.add_argument("--limit", type=int, default=10,
-                              help="最多输出几行，按时间或费用从新到旧取，0 不限（默认 10）")
-    usage_parser.add_argument("--instance", help="只看该实例，如 claude-2")
+    speed_parser = commands.add_parser("speed", help="按会话日志统计生成速度和首 token 延迟")
+    for sub in (usage_parser, speed_parser):
+        sub.add_argument("--by", nargs="+", choices=usage.DIMENSIONS,
+                         help=("分组维度，时间粒度最多一个；speed 默认 instance model，"
+                               "usage 跨度小于 1 天默认 hour，否则 day"))
+        sub.add_argument("--since", type=_span, default=_span("7d"), metavar="SPAN",
+                         help="最近多久，如 7d、12h、5m、20s，all 不限（默认 7d）")
+        sub.add_argument("--engine", choices=["claude", "codex"])
+        sub.add_argument("--limit", type=int, default=10,
+                         help="最多输出几行，按最近请求时间倒序取，0 不限（默认 10）")
+        sub.add_argument("--instance", help="只看该实例，如 claude-2")
     instances_parser = commands.add_parser("instances", help="列出实例")
     quota_parser = commands.add_parser("quota", help="查询套餐额度窗口和账户余额")
     quota_parser.add_argument("name", nargs="?", help="实例名，缺省查询全部")
-    for sub in (usage_parser, quota_parser, instances_parser):
+    for sub in (usage_parser, speed_parser, quota_parser, instances_parser):
         sub.add_argument("--json", action="store_true", help="输出 JSON")
     args = parser.parse_args()
     if args.command == "init":
@@ -120,20 +123,30 @@ def main() -> None:
         print(json.dumps(rows, ensure_ascii=False, indent=2) if args.json
               else _table(["name", "engine", "provider", "model", "command"],
                           [list(row.values()) for row in rows]))
-    elif args.command in ("usage", "quota"):
+    elif args.command in ("usage", "speed", "quota"):
+        is_usage = args.command in ("usage", "speed")
+        if args.command == "speed" and not args.by:
+            args.by = ["instance", "model"]
         if args.command == "usage" and not args.by:
             args.by = (["hour"] if args.since is not None and args.since < timedelta(days=1)
                        else ["day"])
         try:
-            data = _usage(args) if args.command == "usage" else _quota(args)
+            data = _usage(args) if is_usage else _quota(args)
         except ValueError as error:
             parser.error(str(error))
-        if args.command == "usage" and args.limit and len(data) > args.limit:
+        if is_usage and args.limit and len(data) > args.limit:
             print(f"仅显示前 {args.limit} 行，共 {len(data)} 行（--limit 0 显示全部）",
                   file=sys.stderr)
             data = data[:args.limit]
+        if args.command == "speed":
+            dims = ["time" if d in usage.BUCKETS else d for d in args.by]
+            keys = [*dims, "requests", "speed", "first_token", "last"]
+            data = [{key: row[key] for key in keys} for row in data]
         if args.json:
             print(json.dumps(data, ensure_ascii=False, indent=2))
+        elif args.command == "speed":
+            print(_table([*dims, "requests", "speed(tok/s)", "first_token(ms)", "last"],
+                         [list(row.values()) for row in data]))
         else:
             print(_usage_text(data, args.by) if args.command == "usage" else _quota_text(data))
     else:

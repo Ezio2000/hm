@@ -8,7 +8,7 @@ def test_initialize_from_zero(tmp_path, monkeypatch):
     monkeypatch.setattr(profiles.shutil, "which", lambda engine: f"/clients/{engine}")
     monkeypatch.setattr(profiles.Paths, "default", classmethod(
         lambda cls, engine="claude": profiles.for_engine(paths, engine)))
-    for engine in ("claude", "codex"):
+    for engine in ("claude", "codex", "agy"):
         monkeypatch.setattr("sys.argv", ["hm", "init", "--engine", engine])
         cli.main()
         p = profiles.for_engine(paths, engine)
@@ -43,7 +43,15 @@ def test_initialize_migration(tmp_path, monkeypatch):
     (codex / "auth.json").write_text('{"token": "sample"}')
     (codex / "AGENTS.md").write_text("codex prompt")
     before_codex = {p.name: p.read_bytes() for p in codex.iterdir()}
-    for engine in ("claude", "codex"):
+    agy = tmp_path / ".gemini/antigravity-cli"
+    (agy / "skills/personal").mkdir(parents=True)
+    (agy / "skills/personal/SKILL.md").write_text("personal agy skill")
+    (agy / "settings.json").write_text('{"model": "gemini-3.8-flash"}')
+    (agy / "rules").mkdir()
+    (agy / "rules/hm.md").write_text("---\ntrigger: always_on\n---\npersonal agy prompt")
+    (agy / "bin").mkdir()
+    (agy / "bin/tool").write_text("bin-tool")
+    for engine in ("claude", "codex", "agy"):
         monkeypatch.setattr("sys.argv", ["hm", "init", "--engine", engine])
         cli.main()
         assert profiles.find_problems(profiles.for_engine(paths, engine)) == []
@@ -56,3 +64,9 @@ def test_initialize_migration(tmp_path, monkeypatch):
     assert [text for _, text in result.prompt] == ["shared prompt", "personal prompt"]
     assert json.loads((tmp_path / ".claude.json").read_text())["loggedIn"]
     assert {p.name: p.read_bytes() for p in codex.iterdir()} == before_codex
+    [agy_inst] = profiles.list_instances(profiles.for_engine(paths, "agy"))
+    assert agy.is_symlink() and agy_inst.model == "gemini-3.8-flash"
+    assert (agy / "bin/tool").read_text() == "bin-tool"
+    agy_result = profiles.resolve(profiles.for_engine(paths, "agy"), agy_inst)
+    assert agy_result.skills == [("personal", "Instance")]
+    assert any("personal agy prompt" in text for _, text in agy_result.prompt)

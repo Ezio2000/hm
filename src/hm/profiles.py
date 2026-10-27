@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import hashlib
 import json
 import os
 import re
@@ -38,8 +37,11 @@ from urllib.parse import urlparse
 
 import tomlkit
 
+from hm import claude_auth
+
 LINKED_ITEMS = ("plugins", "projects", "statusline.sh")
 CODEX_LINKED_ITEMS = ("plugins",)
+AGY_LINKED_ITEMS = ("bin", "builtin")
 DEFAULT_INSTANCE = "claude-1"
 SHARED_DIR = "shared"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -52,13 +54,18 @@ class Paths:
     home: Path
     claude_system: Path = CLAUDE_SYSTEM
     codex_system: Path = CODEX_SYSTEM
+    agy_system: Path | None = None
     engine: str = "claude"
 
     @classmethod
     def default(cls, engine: str = "claude") -> Paths:
-        if engine not in ("claude", "codex"):
-            raise ValueError("engine must be claude or codex")
+        if engine not in ("claude", "codex", "agy"):
+            raise ValueError("engine must be claude, codex or agy")
         return cls(Path.home(), engine=engine)
+
+    @property
+    def effective_agy_system(self) -> Path:
+        return self.agy_system or (self.home / ".gemini/config")
 
     @property
     def root(self) -> Path:
@@ -126,6 +133,8 @@ class Instance(Layer):
     def base_url(self) -> str | None:
         if self.engine == "codex":
             return self.provider_config.get("base_url")
+        if self.engine == "agy":
+            return None
         return self.env.get("ANTHROPIC_BASE_URL")
 
     @property
@@ -138,21 +147,36 @@ class Instance(Layer):
     def is_official(self) -> bool:
         if self.engine == "codex":
             return self.settings.get("model_provider", "openai") == "openai"
+        if self.engine == "agy":
+            return self.settings.get("modelProvider") != "gemini"
         return self.base_url is None
 
     @property
     def provider(self) -> str:
         if self.base_url:
             return urlparse(self.base_url).netloc
-        return (self.settings.get("model_provider", "OpenAI")
-                if self.engine == "codex" else "Anthropic")
+        if self.engine == "codex":
+            return self.settings.get("model_provider", "OpenAI")
+        if self.engine == "agy":
+            return "Google"
+        return "Anthropic"
 
     @property
     def model(self) -> str:
+        if self.engine == "agy":
+            return self.settings.get("model") or "default"
         return self.env.get("ANTHROPIC_MODEL") or self.settings.get("model") or "default"
 
     @property
     def command(self) -> str:
+        if self.engine == "agy":
+            args = [self.engine]
+            if not self.is_default:
+                rel = os.path.relpath(self.path, self.path.parent.parent / ".gemini")
+                args.append(f"--app_data_dir={rel}")
+            if self.env:
+                args = ["env", *(f"{k}={v}" for k, v in self.env.items()), *args]
+            return shlex.join(args)
         if self.is_default:
             return self.engine
         variable = "CODEX_HOME" if self.engine == "codex" else "CLAUDE_CONFIG_DIR"
@@ -165,6 +189,11 @@ class Instance(Layer):
         if self.engine == "codex":
             env["CODEX_HOME"] = str(self.path)
             return env
+        if self.engine == "agy":
+            if self.env.get("GEMINI_API_KEY"):
+                env.pop("GOOGLE_API_KEY", None)
+            env.update(self.env)
+            return env
         if self.is_default:
             env.pop("CLAUDE_CONFIG_DIR", None)
         else:
@@ -174,7 +203,11 @@ class Instance(Layer):
     def broken_links(self, paths: Paths) -> list[str]:
         if self.engine == "codex" and self.is_default:
             return []
-        items = CODEX_LINKED_ITEMS if self.engine == "codex" else LINKED_ITEMS
+        items = (
+            CODEX_LINKED_ITEMS if self.engine == "codex" else
+            AGY_LINKED_ITEMS if self.engine == "agy" else
+            LINKED_ITEMS
+        )
         return [
             item
             for item in items
@@ -200,12 +233,13 @@ def _load[L: Layer](layer: L, missing_ok: bool = False) -> L:
 
 def load_instance(path: Path, engine: str = "claude", name: str | None = None) -> Instance:
     codex = engine == "codex"
+    agy = engine == "agy"
     return _load(Instance(
         name or path.name, engine,
         path / ("config.toml" if codex else "settings.json"),
         path / "skills",
-        path / ("AGENTS.md" if codex else "CLAUDE.md"),
-        None if codex else path / ".claude.json",
+        path / ("rules/hm.md" if agy else "AGENTS.md" if codex else "CLAUDE.md"),
+        None if codex else path / ("mcp_config.json" if agy else ".claude.json"),
     ))
 
 
@@ -213,6 +247,11 @@ def load_shared(paths: Paths) -> Layer:
     if paths.engine == "codex":
         layer = Layer(SHARED_DIR, "codex", paths.codex_system / "config.toml",
                       paths.home / ".agents/skills", None, None)
+    elif paths.engine == "agy":
+        shared_dir = paths.effective_agy_system
+        layer = Layer(SHARED_DIR, "agy", shared_dir / "settings.json",
+                      shared_dir / "skills", shared_dir / "AGENTS.md",
+                      shared_dir / "mcp_config.json")
     else:
         layer = Layer(SHARED_DIR, "claude", paths.claude_system / "managed-settings.json",
                       paths.link_source / "skills", paths.link_source / "CLAUDE.md",
@@ -244,12 +283,13 @@ def list_instances(paths: Paths) -> list[Instance]:
 
 
 def for_engine(paths: Paths, engine: str) -> Paths:
-    return Paths(paths.home, paths.claude_system, paths.codex_system, engine)
+    return Paths(paths.home, paths.claude_system, paths.codex_system, paths.agy_system, engine)
 
 
 def list_all_instances(paths: Paths) -> list[Instance]:
-    instances = list_instances(for_engine(paths, "claude"))
-    instances += list_instances(for_engine(paths, "codex"))
+    instances = []
+    for engine in ("claude", "codex", "agy"):
+        instances += list_instances(for_engine(paths, engine))
     order = _read_order(for_engine(paths, "claude"))
     rank = {name: i for i, name in enumerate(order)}
     return sorted(instances, key=lambda i: rank.get(i.name, len(rank)))
@@ -264,6 +304,8 @@ def save_order(paths: Paths, names: list[str]) -> None:
 
 def save_settings(layer: Layer, text: str) -> None:
     """Validate JSON/TOML, then write it verbatim, keeping the user's formatting."""
+    if layer.engine == "agy" and layer.shared:
+        raise ValueError("Antigravity CLI settings are per instance; edit an instance instead")
     data = tomlkit.parse(text) if layer.engine == "codex" else json.loads(text)
     if not isinstance(data, dict):
         raise ValueError("Top level of the configuration must be an object")
@@ -346,10 +388,26 @@ def plugin_states(layer: Layer) -> dict[str, bool]:
     if layer.engine == "codex":
         return {k: bool(v["enabled"]) for k, v in layer.settings.get("plugins", {}).items()
                 if isinstance(v, dict) and "enabled" in v}
+    if layer.engine == "agy":
+        return {}
     return {k: bool(v) for k, v in layer.settings.get("enabledPlugins", {}).items()}
 
 
 def list_plugins(paths: Paths, layer: Layer) -> list[Plugin]:
+    if layer.engine == "agy":
+        if layer.shared:
+            return []
+        command = ["agy"]
+        if not layer.is_default:
+            rel = os.path.relpath(layer.path, paths.home / ".gemini")
+            command.append(f"--app_data_dir={rel}")
+        try:
+            out = subprocess.run([*command, "plugin", "list", "--json"], capture_output=True,
+                                 text=True, timeout=15, check=True, env=layer.launch_env())
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError(f"Cannot list Antigravity plugins: {error}") from error
+        return [Plugin(p["name"], p.get("version", ""), p.get("enabled"))
+                for p in json.loads(out.stdout)]
     versions, states = plugin_versions(paths), plugin_states(layer)
     return [Plugin(i, versions.get(i, "not installed"), states.get(i))
             for i in sorted(versions.keys() | states.keys())]
@@ -358,6 +416,20 @@ def list_plugins(paths: Paths, layer: Layer) -> list[Plugin]:
 def set_plugin(layer: Layer, plugin: str, enabled: bool) -> None:
     """An instance layer stores the enabled state explicitly; a shared layer only provides,
     and disabling removes the entry without suppressing the instance."""
+    if layer.engine == "agy":
+        if layer.shared:
+            raise ValueError("Antigravity CLI plugins are managed per instance")
+        command = ["agy"]
+        if not layer.is_default:
+            rel = os.path.relpath(layer.path, layer.path.parent.parent / ".gemini")
+            command.append(f"--app_data_dir={rel}")
+        try:
+            subprocess.run([*command, "plugin", "enable" if enabled else "disable", plugin],
+                           capture_output=True, text=True, timeout=15, check=True,
+                           env=layer.launch_env())
+        except (OSError, subprocess.SubprocessError) as error:
+            raise ValueError(f"Cannot update Antigravity plugin: {error}") from error
+        return
     _require_settings(layer)
     data = layer.settings
     if layer.engine == "codex":
@@ -400,6 +472,8 @@ def plugin_mcp(paths: Paths, plugin: str) -> list[dict[str, str]]:
 # ---------- Skill ----------
 
 def list_skills(layer: Layer) -> list[str]:
+    if layer.engine == "agy" and layer.shared:
+        return []
     if not layer.skills_dir.is_dir():
         return []
     return sorted(p.name for p in layer.skills_dir.iterdir()
@@ -416,6 +490,8 @@ def delete_skill(layer: Layer, name: str) -> None:
 
 def promote_skill(paths: Paths, inst: Instance, name: str) -> None:
     """Move an instance's own skill to the shared layer for all instances of the client."""
+    if inst.engine == "agy":
+        raise ValueError("Antigravity CLI skills are managed per instance")
     target = load_shared(paths).skills_dir / name
     if target.exists():
         raise ValueError(f"The shared layer already has {name}")
@@ -436,16 +512,20 @@ def mcp_entry(name: str, config: dict[str, Any], source: str = "",
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text()) if path.exists() else {}
+    text = path.read_text() if path.exists() else ""
+    return json.loads(text) if text.strip() else {}
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
 def list_mcp(paths: Paths, layer: Layer) -> dict[str, Any]:
     """A layer's own user-level MCP servers; entries in a Claude instance's .claude.json that
     share a name with the shared layer belong to the shared layer."""
+    if layer.engine == "agy" and not layer.shared:
+        return {}
     if layer.mcp_path is None:
         _require_settings(layer)
         return dict(layer.settings.get("mcp_servers", {}))
@@ -459,6 +539,13 @@ def list_mcp(paths: Paths, layer: Layer) -> dict[str, Any]:
 def save_mcp(paths: Paths, layer: Layer, servers: dict[str, Any]) -> None:
     if not all(isinstance(v, dict) for v in servers.values()):
         raise ValueError("Every MCP config must be an object")
+    if layer.engine == "agy":
+        if not layer.shared:
+            raise ValueError("Antigravity CLI MCP servers are configured in shared/agy")
+        state = _read_json(layer.mcp_path)
+        state["mcpServers"] = servers
+        _write_json(layer.mcp_path, state)
+        return
     if layer.mcp_path is None:
         _require_settings(layer)
         data = layer.settings
@@ -496,13 +583,20 @@ def read_prompt(layer: Layer) -> str:
     if layer.prompt_path is None:
         return str(layer.settings.get("developer_instructions", ""))
     try:
-        return layer.prompt_path.read_text()
+        text = layer.prompt_path.read_text()
+        if (layer.engine == "agy" and not layer.shared
+                and text.startswith("---\ntrigger: always_on\n---\n")):
+            return text.removeprefix("---\ntrigger: always_on\n---\n")
+        return text
     except FileNotFoundError:
         return ""
 
 
 def save_prompt(layer: Layer, text: str) -> None:
     if layer.prompt_path is not None:
+        layer.prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        if layer.engine == "agy" and not layer.shared and text.strip():
+            text = "---\ntrigger: always_on\n---\n" + text
         layer.prompt_path.write_text(text if not text or text.endswith("\n") else text + "\n")
         return
     _require_settings(layer)
@@ -527,21 +621,28 @@ class Result:
 
 def resolve(paths: Paths, inst: Instance) -> Result:
     """Layer the instance and shared layers by each client's own rules: shared wins for
-    Claude, instance wins for Codex."""
+    Claude, instance wins for Codex and Antigravity."""
     shared = load_shared(paths)
     for layer in (inst, shared):
         _require_settings(layer)
     own, common = plain(inst.settings), plain(shared.settings)
     codex = inst.engine == "codex"
-    settings = merge(common, own) if codex else merge(own, common, union_lists=True)
+    agy = inst.engine == "agy"
     if codex:
+        settings = merge(common, own)
         plugins = sorted(k for k, v in settings.get("plugins", {}).items()
                          if isinstance(v, dict) and v.get("enabled"))
+    elif agy:
+        settings = own
+        plugins = sorted(p.id for p in list_plugins(paths, inst) if p.enabled)
     else:
+        settings = merge(own, common, union_lists=True)
         plugins = sorted(k for k, v in settings.get("enabledPlugins", {}).items() if v)
 
     own_skills, shared_skills = set(list_skills(inst)), set(list_skills(shared))
-    both = ("Shared (overrides same-name instance skill)" if not codex
+    if agy:
+        shared_skills = set()
+    both = ("Shared (overrides same-name instance skill)" if inst.engine == "claude"
             else "Instance + Shared (same name)")
     skills = [(n, both if n in own_skills and n in shared_skills
                else "Shared" if n in shared_skills else "Instance")
@@ -552,12 +653,16 @@ def resolve(paths: Paths, inst: Instance) -> Result:
     mcp = [mcp_entry(k, v, "Instance + Shared (merged)" if k in own_mcp and k in shared_mcp
                      else "Shared" if k in shared_mcp else "Instance")
            for k, v in sorted(servers.items())]
-    for plugin in plugins:
-        mcp += plugin_mcp(paths, plugin)
+    if not agy:
+        for plugin in plugins:
+            mcp += plugin_mcp(paths, plugin)
 
     if codex:
         prompt = [("developer_instructions", str(settings.get("developer_instructions", ""))),
                   (f"Instance {inst.prompt_path.name}", read_prompt(inst))]
+    elif agy:
+        prompt = [("Shared AGENTS.md", read_prompt(shared)),
+                  ("Instance rules/hm.md", read_prompt(inst))]
     else:
         prompt = [("Shared CLAUDE.md", read_prompt(shared)),
                   ("Instance CLAUDE.md", read_prompt(inst))]
@@ -567,6 +672,21 @@ def resolve(paths: Paths, inst: Instance) -> Result:
 # ---------- Instance lifecycle and status ----------
 
 def auth_status(inst: Instance) -> dict[str, Any]:
+    if inst.engine == "agy":
+        command = [inst.engine]
+        if not inst.is_default:
+            rel = os.path.relpath(inst.path, inst.path.parent.parent / ".gemini")
+            command.append(f"--app_data_dir={rel}")
+        out = subprocess.run(
+            [*command, "models"],
+            env=inst.launch_env(),
+            capture_output=True,
+            text=True,
+            timeout=15,
+            stdin=subprocess.DEVNULL,
+        )
+        msg = "Logged in" if out.returncode == 0 else (out.stderr or out.stdout).strip()
+        return {"loggedIn": out.returncode == 0, "message": msg}
     out = subprocess.run(
         ["codex", "login", "status"] if inst.engine == "codex" else ["claude", "auth", "status"],
         env=inst.launch_env(),
@@ -597,7 +717,7 @@ def read_credentials(inst: Instance) -> dict[str, Any]:
         raise ValueError(inst.settings_error)
     # Claude credentials come only from the instance's own settings env; the process
     # environment may be inherited from another instance that called hm.
-    env = inst.env if inst.engine == "claude" else {**inst.launch_env(), **inst.env}
+    env = inst.env if inst.engine in ("claude", "agy") else {**inst.launch_env(), **inst.env}
     result = {"name": inst.name, "engine": inst.engine, "url": inst.base_url,
               "api_key": None, "oauth_token": None, "source": None}
     if inst.engine == "claude":
@@ -608,23 +728,17 @@ def read_credentials(inst: Instance) -> dict[str, Any]:
                 result[field] = env[key]
                 result["source"] = key
                 return result
-        service = "Claude Code-credentials"
-        if not inst.is_default:
-            service += "-" + hashlib.sha256(str(inst.path).encode()).hexdigest()[:8]
-        credentials = {}
-        try:
-            out = subprocess.run(["security", "find-generic-password", "-s", service, "-w"],
-                                 capture_output=True, text=True, timeout=10)
-            if out.returncode == 0:
-                credentials = json.loads(out.stdout)
-                result["source"] = f"Keychain: {service}"
-        except FileNotFoundError:
-            pass
-        file = inst.path / ".credentials.json"
-        if not credentials and file.exists():
-            credentials = json.loads(file.read_text())
-            result["source"] = str(file)
+        credentials, result["source"] = claude_auth.read(inst)
         result["oauth_token"] = credentials.get("claudeAiOauth", {}).get("accessToken")
+    elif inst.engine == "agy":
+        result["url"] = inst.base_url or "https://generativelanguage.googleapis.com"
+        for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+            if env.get(key):
+                result["api_key"] = env[key]
+                result["source"] = key
+                return result
+        if inst.is_official:
+            result["source"] = "Google Account"
     else:
         provider = inst.provider_config
         if provider.get("experimental_bearer_token"):
@@ -652,8 +766,8 @@ def read_credentials(inst: Instance) -> dict[str, Any]:
 def validate_new_name(paths: Paths, name: str) -> str | None:
     if not NAME_RE.match(name):
         return "Use lowercase letters, digits and hyphens only, and do not start with a hyphen"
-    if name in (SHARED_DIR, "claude", "codex", "hm", "claude-1", "codex-1") or any(
-        (for_engine(paths, engine).root / name).exists() for engine in ("claude", "codex")
+    if name in (SHARED_DIR, "claude", "codex", "agy", "hm", "claude-1", "codex-1", "agy-1") or any(
+        (for_engine(paths, engine).root / name).exists() for engine in ("claude", "codex", "agy")
     ):
         return f"{name} already exists"
     return None
@@ -672,6 +786,24 @@ def create_instance(
         raise ValueError("The template and the new instance must use the same client")
     if not paths.link_source.is_dir():
         raise ValueError(f"Run hm init --engine {paths.engine} first")
+    if paths.engine == "agy":
+        if base_url:
+            raise ValueError("Antigravity CLI does not support custom provider URLs")
+        settings = json.loads(template.settings_path.read_text())
+        settings["model"] = model
+        settings.pop("env", None)
+        if token:
+            settings["modelProvider"] = "gemini"
+            settings["env"] = {"GEMINI_API_KEY": token}
+        else:
+            settings.pop("modelProvider", None)
+        path = paths.root / name
+        path.mkdir(parents=True)
+        _write_json(path / "settings.json", settings)
+        for item in AGY_LINKED_ITEMS:
+            if (paths.link_source / item).exists():
+                (path / item).symlink_to(paths.link_source / item)
+        return load_instance(path, "agy")
     if paths.engine == "codex":
         settings = tomlkit.parse(template.settings_path.read_text())
         for key in ("model_provider", "model_providers", "model_context_window",
@@ -741,8 +873,15 @@ def launch_instance(inst: Instance, cwd: Path) -> str:
     executable = shutil.which(inst.engine)
     if executable is None:
         raise ValueError(f"Client not found: {inst.engine}")
-    args = ["env", "-u", "CLAUDE_CONFIG_DIR", "-u", "CODEX_HOME",
-            *(f"{k}={v}" for k, v in inst.launch_env({}).items()), executable]
+    if inst.engine == "agy":
+        rel = os.path.relpath(inst.path, inst.path.parent.parent / ".gemini")
+        args = ["env", *(["-u", "GOOGLE_API_KEY"] if inst.env.get("GEMINI_API_KEY") else []),
+                *(f"{k}={v}" for k, v in inst.launch_env({}).items()), executable]
+        if not inst.is_default:
+            args.append(f"--app_data_dir={rel}")
+    else:
+        args = ["env", "-u", "CLAUDE_CONFIG_DIR", "-u", "CODEX_HOME",
+                *(f"{k}={v}" for k, v in inst.launch_env({}).items()), executable]
     command = f"cd {shlex.quote(str(directory))} && exec {shlex.join(args)}"
     result = subprocess.run(
         ["osascript", "-e", 'on run argv\n'
@@ -757,7 +896,7 @@ def delete_instance(inst: Instance) -> None:
     only the symlinks themselves and never enters the shared directory."""
     if inst.is_default:
         raise ValueError(f"{inst.name} is the default instance and cannot be deleted")
-    if inst.is_official:
+    if inst.is_official and inst.engine != "agy":
         subprocess.run(
             ["codex", "logout"] if inst.engine == "codex" else ["claude", "auth", "logout"],
             env=inst.launch_env(),
@@ -785,6 +924,20 @@ def find_problems(paths: Paths) -> list[str]:
     if shared.settings_error:
         problems.append(
             f"Failed to read shared settings {shared.settings_path}: {shared.settings_error}")
+    if paths.engine == "agy":
+        default = paths.root / "agy-1"
+        native = paths.home / ".gemini/antigravity-cli"
+        if not _points_to(native, default):
+            problems.append("~/.gemini/antigravity-cli does not point to agy-1: "
+                            "running agy directly does not use its settings and login")
+        for inst in list_instances(paths):
+            if inst.settings_error:
+                problems.append(
+                    f"The settings of {inst.name} are not valid JSON: this instance "
+                    "will fail to start; select it and choose Edit from the Actions menu")
+            problems += [f"{inst.name} is not linked to {item} in {paths.link_source}"
+                         for item in inst.broken_links(paths)]
+        return problems
     if paths.engine == "codex":
         if not (paths.codex_system.is_dir() and os.access(paths.codex_system, os.W_OK)):
             problems.append(f"{paths.codex_system} is missing or not writable: the Codex shared "

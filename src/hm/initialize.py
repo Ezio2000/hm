@@ -97,8 +97,8 @@ def _permissions(directories: list[Path], files: list[Path]) -> None:
 
 
 def run(paths: Paths) -> None:
-    if paths.engine not in ("claude", "codex"):
-        raise ValueError("engine must be claude or codex")
+    if paths.engine not in ("claude", "codex", "agy"):
+        raise ValueError("engine must be claude, codex or agy")
     if shutil.which(paths.engine) is None:
         raise ValueError(f"Client {paths.engine} not found; install it and make sure it is on PATH")
     shared = profiles.load_shared(paths)
@@ -108,6 +108,28 @@ def run(paths: Paths) -> None:
         _permissions([paths.codex_system], [shared.settings_path])
         _file(paths.link_source / "config.toml", "")
         _file(shared.settings_path, "")
+        shared.skills_dir.mkdir(parents=True, exist_ok=True)
+        return
+
+    if paths.engine == "agy":
+        native = paths.home / ".gemini/antigravity-cli"
+        default = paths.root / "agy-1"
+        original = default if _linked(native, default) or not native.exists() else native
+        _check(native, default)
+        _read(original / "settings.json")
+        items = [i for i in profiles.AGY_LINKED_ITEMS
+                 if (original / i).exists() or (paths.link_source / i).exists()]
+        for item in items:
+            _check(original / item, paths.link_source / item)
+        _share(native, default)
+        _file(default / "settings.json", "{}\n")
+        _file(default / "mcp_config.json", '{"mcpServers": {}}\n')
+        paths.link_source.mkdir(parents=True, exist_ok=True)
+        for item in items:
+            _share(default / item, paths.link_source / item)
+        _file(shared.settings_path, "{}\n")
+        _file(shared.prompt_path, "")
+        _file(shared.mcp_path, '{"mcpServers": {}}\n')
         shared.skills_dir.mkdir(parents=True, exist_ok=True)
         return
 

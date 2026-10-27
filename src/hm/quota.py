@@ -1,13 +1,15 @@
 import base64
 import json
+import subprocess
 import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 
-from hm import profiles
+from hm import claude_auth, profiles
 
 Quota = dict[str, Any]  # {"windows": [...], "balance": [...]}
 
@@ -21,9 +23,9 @@ def _iso(value: str | float) -> str:
     return moment.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _window(label: str, used_percent: float, resets_at: str | float) -> dict[str, Any]:
+def _window(label: str, used_percent: float, resets_at: str | float | None) -> dict[str, Any]:
     return {"label": label, "used_percent": round(used_percent, 1),
-            "resets_at": _iso(resets_at)}
+            "resets_at": _iso(resets_at) if resets_at is not None else None}
 
 
 def _get(url: str, headers: dict[str, str]) -> Any:
@@ -137,9 +139,19 @@ def read_one(inst: profiles.Instance) -> dict[str, Any]:
     for provider, matches, fetch in ADAPTERS:
         if matches(inst):
             try:
+                if provider == "anthropic":
+                    claude_auth.refresh(inst)
+                creds = profiles.read_credentials(inst)
+                try:
+                    data = fetch(creds)
+                except HTTPError as error:
+                    if (provider != "anthropic" or error.code != 401
+                            or not claude_auth.refresh(inst, creds["oauth_token"])):
+                        raise
+                    data = fetch(profiles.read_credentials(inst))
                 return {"name": inst.name, "provider": provider, "supported": True,
-                        "windows": [], "balance": [], **fetch(profiles.read_credentials(inst))}
-            except (OSError, ValueError, KeyError, TypeError) as error:
+                        "windows": [], "balance": [], **data}
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
                 return {"name": inst.name, "provider": provider, "supported": True,
                         "error": f"{type(error).__name__}: {error}"}
     return {"name": inst.name, "supported": False,

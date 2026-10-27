@@ -29,7 +29,7 @@ BUCKETS = {"second": "%Y-%m-%d %H:%M:%S", "hour": "%Y-%m-%d %H:00", "day": "%Y-%
            "week": "%G-W%V", "month": "%Y-%m"}
 DIMENSIONS = (*BUCKETS, "type", "model", "session", "instance")
 PRICE_KEYS = ("input", "output", "cache_read", "cache_write")
-CACHE_VERSION = 1
+CACHE_VERSION = 3
 
 
 def _ms(timestamp: str | None) -> int | None:
@@ -171,6 +171,43 @@ def parse_codex(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def parse_agy(path: Path) -> list[dict[str, Any]]:
+    """Parse transcript.jsonl from an Antigravity CLI session."""
+    records: list[dict[str, Any]] = []
+    conversation_id = path.parent.parent.parent.name
+    model = "unknown"
+    for row in _rows(path):
+        ms = _ms(row.get("created_at") or row.get("timestamp"))
+        source = row.get("source")
+        kind = row.get("type")
+        if source == "USER_EXPLICIT" or kind == "USER_INPUT":
+            content = str(row.get("content") or "")
+            pattern = r"`Model Selection` from .*? to ([^\n]+?)\.(?:\s[A-Z]|\s*$)"
+            if m := re.search(pattern, content):
+                model = re.sub(r"[^a-z0-9.]+", "-", m.group(1).lower()).strip("-")
+        elif source == "MODEL" and kind == "PLANNER_RESPONSE":
+            inp = row.get("input_tokens") or 0
+            out = row.get("output_tokens") or 0
+            cached = row.get("cache_read_tokens") or 0
+            step_idx = row.get("step_index", len(records))
+            if not ms or not any((inp, out, cached)):
+                continue
+            records.append({
+                "rid": f"{conversation_id}:{step_idx}",
+                "time": ms,
+                "engine": "agy",
+                "model": model,
+                "session": f"- {conversation_id}",
+                "input": inp,
+                "output": out,
+                "cache_read": cached,
+                "cache_write": 0,
+                "latency_ms": None,
+                "first_token_ms": None,
+            })
+    return records
+
+
 def _sources(paths: Paths) -> list[tuple[str, Path]]:
     files = [("claude", f) for f in
              (for_engine(paths, "claude").link_source / "projects").rglob("*.jsonl")]
@@ -178,6 +215,8 @@ def _sources(paths: Paths) -> list[tuple[str, Path]]:
         for folder in ("sessions", "archived_sessions"):
             files += [("codex", f) for pattern in ("*.jsonl", "*.jsonl.zst")
                       for f in (inst.path / folder).rglob(pattern)]
+    for inst in list_instances(for_engine(paths, "agy")):
+        files += [("agy", f) for f in (inst.path / "brain").rglob("transcript.jsonl")]
     return files
 
 
@@ -208,7 +247,11 @@ def sync(paths: Paths, engine: str | None = None) -> None:
             stat = file.stat()
             if known.get(key) == (stat.st_size, stat.st_mtime):
                 continue
-            records = parse_codex(file) if source_engine == "codex" else parse_claude(file)
+            records = (
+                parse_codex(file) if source_engine == "codex" else
+                parse_agy(file) if source_engine == "agy" else
+                parse_claude(file)
+            )
             db.execute("delete from records where path = ?", (key,))
             db.executemany(f"insert into records values ({', '.join('?' * len(FIELDS))})",
                            [tuple({**r, "path": key}[f] for f in FIELDS) for r in records])
@@ -280,10 +323,14 @@ def _instance_resolver(paths: Paths) -> Callable[[dict[str, Any]], str]:
                 if match := re.search(r'"sessionId":"([^"]+)"', line):
                     claude.setdefault(match[1], inst.name)
     codex = [(f"{inst.path}/", inst.name) for inst in list_instances(for_engine(paths, "codex"))]
+    agy = [(f"{inst.path}/", inst.name) for inst in list_instances(for_engine(paths, "agy"))]
 
     def resolve(record: dict[str, Any]) -> str:
         if record["engine"] == "claude":
             return claude.get(record["session"].rsplit(" ", 1)[-1], "unknown")
+        if record["engine"] == "agy":
+            return next((name for prefix, name in agy if record["path"].startswith(prefix)),
+                        "unknown")
         return next((name for prefix, name in codex if record["path"].startswith(prefix)),
                     "unknown")
 
@@ -300,7 +347,7 @@ def report(paths: Paths, by: list[str], since: datetime | None = None,
     if sum(d in BUCKETS for d in by) > 1:
         raise ValueError("Choose at most one time granularity")
     if instance and instance != "unknown":
-        owner = next((inst for kind in ("claude", "codex")
+        owner = next((inst for kind in ("claude", "codex", "agy")
                       for inst in list_instances(for_engine(paths, kind))
                       if inst.name == instance), None)
         if owner is None:

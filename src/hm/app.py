@@ -33,7 +33,7 @@ from textual.worker import get_current_worker
 from hm import profiles, usage
 from hm.profiles import Instance, Layer, Paths
 
-ENGINES = ("claude", "codex")
+ENGINES = ("claude", "codex", "agy")
 
 
 def mark(value: bool | None) -> str:
@@ -204,7 +204,8 @@ class LayerPanel(Vertical):
             view.update(Text(f"Cannot layer: {e}", style="red"))
             return
         rule = ("Claude: shared layer (managed) wins; lists are unioned" if inst.engine == "claude"
-                else "Codex: instance layer wins; tables merge key by key")
+                else "Antigravity: instance settings and skills; global MCP and rules"
+                if inst.engine == "agy" else "Codex: instance layer wins; tables merge key by key")
         parts: list[RenderableType] = [Text(f"Result = {inst.name} + Shared · {rule}\n",
                                             style="bold")]
         parts.append(Text("Plugin", style="bold underline"))
@@ -425,7 +426,7 @@ class NewScreen(ModalScreen[tuple[str, Instance, str, str, str] | None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
             yield Label("New instance")
-            yield Input(placeholder="Name, e.g. claude-qwen, codex-glm", id="name")
+            yield Input(placeholder="Name, e.g. claude-qwen, codex-glm, agy-flash", id="name")
             yield Select(
                 [(f"{i.name} ({i.engine} · {i.provider})", i.name)
                  for i in self.instances.values()],
@@ -729,7 +730,8 @@ class HarnessManager(App[Instance | None]):
             self.notify(f"{inst.name} is the default instance (running {inst.engine} directly "
                         "uses it) and cannot be deleted", severity="warning")
             return
-        extra = " and log the account out first" if inst.is_official else ""
+        extra = (" and log the account out first"
+                 if inst.is_official and inst.engine != "agy" else "")
         message = (f"Delete instance {inst.name}? This removes {inst.path}{extra}. "
                    "The shared layer is not affected.")
 

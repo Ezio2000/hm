@@ -41,7 +41,7 @@ from hm import claude_auth
 
 LINKED_ITEMS = ("plugins", "projects", "statusline.sh")
 CODEX_LINKED_ITEMS = ("plugins",)
-AGY_LINKED_ITEMS = ("bin", "builtin")
+AGY_LINKED_ITEMS = ("bin",)
 DEFAULT_INSTANCE = "claude-1"
 SHARED_DIR = "shared"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")

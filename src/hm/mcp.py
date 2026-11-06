@@ -42,9 +42,9 @@ def _summary(paths: profiles.Paths, layer: profiles.Layer) -> dict[str, Any]:
 
 @server.tool()
 def overview() -> dict[str, Any]:
-    """Read the current instances and shared layers. Every instance, shared/claude,
-    shared/codex and shared/agy has five parts: Setting, Plugin, Skill, MCP and Prompt. An
-    instance's effective result = its own layer + the shared layer."""
+    """Read the current instances and shared layers. Every instance, shared/claude and
+    shared/codex has five parts: Setting, Plugin, Skill, MCP and Prompt. An instance's
+    effective result = its own layer + the shared layer."""
     paths = profiles.Paths.default()
     return {
         "instances": [
@@ -54,7 +54,7 @@ def overview() -> dict[str, Any]:
         ],
         "shared": {
             f"shared/{engine}": _summary(p, profiles.load_shared(p))
-            for engine in ("claude", "codex", "agy")
+            for engine in ("claude", "codex")
             for p in [profiles.for_engine(paths, engine)]
         },
     }
@@ -65,7 +65,7 @@ def read_layer(target: str) -> dict[str, Any]:
     """Read the full content of one layer: settings (including credentials), plugin versions
     and enabled state, skills and their directory, MCP servers, and Prompt.
 
-    target is an instance name, or shared/claude, shared/codex or shared/agy.
+    target is an instance name, or shared/claude or shared/codex.
     """
     paths, layer = _layer(target)
     if layer.settings_error:
@@ -201,7 +201,7 @@ def usage_report(
     by: list[Literal["second", "hour", "day", "week", "month", "type", "model", "session",
                      "instance"]],
     days: int | None = 7,
-    engine: Literal["claude", "codex", "agy"] | None = None,
+    engine: Literal["claude", "codex"] | None = None,
     session: str | None = None,
     instance: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -260,7 +260,7 @@ def create_instance(
 @server.tool()
 def delete_instance(name: str) -> str:
     """Delete an instance and its local data; an official instance is logged out first.
-    The defaults claude-1, codex-1 and agy-1 cannot be deleted."""
+    The defaults claude-1 and codex-1 cannot be deleted."""
     profiles.delete_instance(_instance(name))
     return f"Deleted {name}"
 
@@ -296,8 +296,6 @@ def check_status(name: str | None = None) -> dict[str, Any]:
                 (inst.provider_config.get("experimental_bearer_token")
                  or os.environ.get(inst.provider_config.get("env_key", "")))
                 if inst.engine == "codex" else
-                (inst.env.get("GEMINI_API_KEY") or inst.env.get("GOOGLE_API_KEY"))
-                if inst.engine == "agy" else
                 inst.env.get("ANTHROPIC_AUTH_TOKEN") or inst.env.get("ANTHROPIC_API_KEY")
             ), "verified": False}
         statuses.append({"name": inst.name, "engine": inst.engine,
@@ -305,6 +303,6 @@ def check_status(name: str | None = None) -> dict[str, Any]:
                          "broken_links": inst.broken_links(
                              profiles.for_engine(paths, inst.engine)), "auth": auth})
     return {"instances": statuses, "global_problems": [
-        problem for engine in ("claude", "codex", "agy")
+        problem for engine in ("claude", "codex")
         for problem in profiles.find_problems(profiles.for_engine(paths, engine))
     ]}

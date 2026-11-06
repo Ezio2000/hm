@@ -11,20 +11,15 @@ from hm import claude_auth, cli, mcp, profiles, quota, usage
 from hm.app import EditScreen, HarnessManager, InstanceTable
 
 
-@pytest.mark.parametrize("engine", ["claude", "codex", "agy"])
+@pytest.mark.parametrize("engine", ["claude", "codex"])
 def test_instance_lifecycle(paths, engine):
     paths = profiles.for_engine(paths, engine)
     if engine == "codex":
         paths.link_source.mkdir()
         (paths.link_source / "config.toml").write_text('model = "test-model"\n')
-    elif engine == "agy":
-        paths.link_source.mkdir(parents=True)
-        (paths.root / "agy-1").mkdir(parents=True)
-        (paths.root / "agy-1/settings.json").write_text('{"model": "test-model"}')
     template = profiles.list_instances(paths)[0]
     inst = profiles.create_instance(
-        paths, f"{engine}-smoke", template, "" if engine == "agy" else "https://example.test/v1",
-        "test-key", "test-model",
+        paths, f"{engine}-smoke", template, "https://example.test/v1", "test-key", "test-model",
     )
     assert inst.model == "test-model"
     assert inst.broken_links(paths) == []
@@ -43,46 +38,6 @@ def test_cli_instances(paths, monkeypatch, capsys):
         "claude-1", "claude-2", "claude-kimi"]
 
 
-def test_agy_configuration_and_usage(paths, monkeypatch, tmp_path):
-    paths = profiles.for_engine(paths, "agy")
-    paths.link_source.mkdir(parents=True)
-    default = paths.root / "agy-1"
-    default.mkdir()
-    (default / "settings.json").write_text('{"model": "old", "modelProvider": "gemini"}')
-    template = profiles.load_instance(default, "agy")
-    with pytest.raises(ValueError, match="custom provider"):
-        profiles.create_instance(paths, "agy-bad", template, "https://example.test", "key", "m")
-    inst = profiles.create_instance(paths, "agy-test", template, "", "key", "model-id")
-    assert inst.settings["modelProvider"] == "gemini"
-    assert inst.launch_env({})["GEMINI_API_KEY"] == "key"
-    profiles.save_prompt(inst, "instance instructions")
-    assert inst.prompt_path.read_text().startswith("---\ntrigger: always_on\n---\n")
-    assert profiles.read_prompt(inst) == "instance instructions\n"
-    shared = profiles.load_shared(paths)
-    shared.mcp_path.parent.mkdir(parents=True)
-    shared.mcp_path.write_text("")
-    profiles.save_mcp(paths, shared, {"server": {"command": "example"}})
-    assert profiles.list_mcp(paths, shared)["server"]["command"] == "example"
-    with pytest.raises(ValueError, match="shared/agy"):
-        profiles.save_mcp(paths, inst, {})
-    calls = []
-
-    def run(args, **kwargs):
-        calls.append(args)
-        return SimpleNamespace(returncode=0, stdout='[{"name":"p","enabled":true}]', stderr="")
-
-    monkeypatch.setattr(profiles.subprocess, "run", run)
-    assert profiles.list_plugins(paths, inst)[0].enabled
-    assert calls[0][1].startswith("--app_data_dir=")
-    log = tmp_path / "brain/session/.system_generated/logs/transcript.jsonl"
-    log.parent.mkdir(parents=True)
-    log.write_text(json.dumps({"source": "MODEL", "type": "PLANNER_RESPONSE",
-                               "created_at": "2026-10-27T12:00:00Z", "input_tokens": 3,
-                               "output_tokens": 2}) + "\n")
-    [record] = usage.parse_agy(log)
-    assert record["model"] == "unknown" and record["latency_ms"] is None
-
-
 async def test_mcp_read_write(paths, monkeypatch):
     monkeypatch.setattr(
         profiles.Paths, "default",
@@ -94,8 +49,6 @@ async def test_mcp_read_write(paths, monkeypatch):
     mcp.save_mcp("shared/claude", {"web": {"url": "https://example.test/mcp"}})
     assert mcp.read_layer("shared/claude")["mcp"]["web"]["url"] == "https://example.test/mcp"
     assert mcp.read_result("claude-2")["mcp"][0]["name"] == "web"
-    mcp.save_mcp("shared/agy", {"memory": {"command": "npx", "args": ["memory"]}})
-    assert mcp.read_layer("shared/agy")["mcp"]["memory"]["command"] == "npx"
 
 
 async def test_tui_edit_and_launch(paths, mock_auth_status):
@@ -140,24 +93,11 @@ def test_usage_report(paths, monkeypatch):
                 "last_token_usage": {"input_tokens": 10, "output_tokens": 20}}}},
     ]
     (codex / "sessions/smoke.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
-    agy = paths.home / ".agy-profiles/agy-1"
-    (agy / "brain/smoke-1/.system_generated/logs").mkdir(parents=True)
-    agy_rows = [
-        {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT",
-         "created_at": "2026-10-20T12:00:00Z",
-         "content": "The user changed setting `Model Selection` from None to test-model."},
-        {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE",
-         "created_at": "2026-10-20T12:00:02Z",
-         "input_tokens": 10, "output_tokens": 20, "cache_read_tokens": 0},
-    ]
-    (agy / "brain/smoke-1/.system_generated/logs/transcript.jsonl").write_text(
-        "".join(json.dumps(row) + "\n" for row in agy_rows)
-    )
     usage.save_pricing(paths, json.dumps({"test-model": dict.fromkeys(usage.PRICE_KEYS, 1)}))
     report = usage.report(paths, ["type"])
-    assert {row["type"] for row in report} == {"Claude", "Codex", "Agy"}
+    assert {row["type"] for row in report} == {"Claude", "Codex"}
     assert all(row["requests"] == 1 and row["output"] == 20 for row in report)
-    assert sum(row["cost"] for row in report) == pytest.approx(90 / 1e6)
+    assert sum(row["cost"] for row in report) == pytest.approx(60 / 1e6)
 
     # The instance filter must apply before parsing; the other, unscanned client's cache
     # must be kept.
@@ -179,7 +119,7 @@ def test_usage_report(paths, monkeypatch):
     with usage._connect(paths) as db:
         assert db.execute("select count(*) from records where engine = 'codex'").fetchone()[0] == 1
     monkeypatch.setattr(usage, "parse_codex", original)
-    assert len(usage.report(paths, ["type"])) == 3
+    assert len(usage.report(paths, ["type"])) == 2
     assert usage.report(paths, ["type"], engine="codex", instance="claude-2") == []
     with pytest.raises(ValueError, match="Instance not found"):
         usage.report(paths, ["type"], instance="missing")

@@ -88,7 +88,7 @@ def main() -> None:
     commands.add_parser("mcp", help="start the stdio MCP server")
     init_parser = commands.add_parser(
         "init", help="initialize or adopt an existing configuration; may ask for admin rights")
-    init_parser.add_argument("--engine", required=True, choices=["claude", "codex", "agy"],
+    init_parser.add_argument("--engine", required=True, choices=["claude", "codex"],
                              help="client to initialize")
     usage_parser = commands.add_parser("usage", help="token usage and cost from session logs")
     speed_parser = commands.add_parser(
@@ -100,7 +100,7 @@ def main() -> None:
                                "1 day, otherwise day"))
         sub.add_argument("--since", type=_span, default=_span("7d"), metavar="SPAN",
                          help="time span such as 7d, 12h, 5m or 20s; all for no limit (default 7d)")
-        sub.add_argument("--engine", choices=["claude", "codex", "agy"])
+        sub.add_argument("--engine", choices=["claude", "codex"])
         sub.add_argument("--limit", type=int, default=10,
                          help="maximum rows, most recent first; 0 for no limit (default 10)")
         sub.add_argument("--instance", help="only this instance, e.g. claude-2")
